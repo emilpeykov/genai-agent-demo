@@ -1,0 +1,32 @@
+from fastapi.testclient import TestClient
+
+from app.main import app
+
+client = TestClient(app)
+
+
+def test_health_endpoint():
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_chat_endpoint_tool_path():
+    response = client.post("/chat", json={"prompt": "10 * 4"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["tool_used"] == "calculator"
+    assert body["answer"] == "40"
+
+
+def test_chat_endpoint_llm_path():
+    response = client.post("/chat", json={"prompt": "Tell me a fun fact."})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["tier"] in {"fast", "balanced", "powerful"}
+    assert "answer" in body
+
+
+def test_chat_endpoint_rejects_empty_prompt():
+    response = client.post("/chat", json={"prompt": ""})
+    assert response.status_code == 422
