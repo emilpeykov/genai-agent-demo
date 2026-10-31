@@ -25,6 +25,16 @@ def test_agent_routes_os_info_question_to_shell_tool():
     assert "/" in result.answer
 
 
+def test_agent_routes_current_date_question_to_shell_tool():
+    # Regression test: "What is the current date?" previously fell through to
+    # the LLM because the regex required "the date" right after "is", with no
+    # allowance for "current" in between.
+    agent = Agent(provider=MockLLMProvider(seed=1))
+    result = agent.handle("What is the current date?")
+    assert result.tool_used == "run_shell_command"
+    assert result.routing_reason == "Matched OS-info intent; ran allowed command 'date'."
+
+
 def test_agent_routes_general_question_to_llm():
     agent = Agent(provider=MockLLMProvider(seed=1))
     result = agent.handle("What's the capital of France?")

@@ -29,7 +29,13 @@ _KB_TRIGGER = re.compile(r"\b(refund policy|sla|pricing)\b", re.IGNORECASE)
 # LLM-driven agent version will instead let the model choose the command
 # text directly, relying on run_shell_command's own allowlist for safety.)
 _SHELL_INTENTS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"\b(what time|current time|what('s| is) the date|today'?s date)\b", re.IGNORECASE), "date"),
+    (
+        re.compile(
+            r"\b(what time|current time|current date|what('s| is) (the )?date|today'?s date)\b",
+            re.IGNORECASE,
+        ),
+        "date",
+    ),
     (re.compile(r"\b(current (directory|folder)|working directory|pwd)\b", re.IGNORECASE), "pwd"),
     (re.compile(r"\b(disk (space|usage)|free space)\b", re.IGNORECASE), "df -h"),
     (re.compile(r"\b(who am i|current user)\b", re.IGNORECASE), "whoami"),
