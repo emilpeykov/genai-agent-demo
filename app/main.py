@@ -25,8 +25,21 @@ _agent = Agent()
 _react_agent = ReActAgent()
 
 
+class ChatMessage(BaseModel):
+    role: str = Field(..., description="'user' or 'assistant'.")
+    content: str
+
+
 class ChatRequest(BaseModel):
     prompt: str = Field(..., min_length=1, description="User's natural language request.")
+    history: list[ChatMessage] = Field(
+        default_factory=list,
+        description=(
+            "Prior turns of this conversation (role/content pairs, oldest first). "
+            "Only used by /agent/react -- without it, each call is stateless and "
+            "the model has no memory of anything said earlier."
+        ),
+    )
 
 
 class ChatResponse(BaseModel):
@@ -84,6 +97,10 @@ def chat(request: ChatRequest) -> ChatResponse:
 def agent_react(request: ChatRequest) -> ReActResponse:
     """Same task as /chat, but the LLM itself decides which tool(s) to call
     and when to stop, instead of our own routing rules. Requires Ollama
-    running locally with a tool-calling-capable model (e.g. llama3.1)."""
-    result = _react_agent.handle(request.prompt)
+    running locally with a tool-calling-capable model (e.g. llama3.1).
+    Pass prior turns via ``history`` to continue a multi-turn conversation --
+    otherwise each call is independent and the model has no memory of
+    anything said earlier."""
+    history = [{"role": m.role, "content": m.content} for m in request.history]
+    result = _react_agent.handle(request.prompt, history=history)
     return ReActResponse.from_react_result(result)

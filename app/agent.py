@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from app.prompts import render_assistant_prompt
 from app.providers import LLMProvider, get_default_provider
 from app.resilience import AllTiersFailedError, call_with_resilience
 from app.router import classify_complexity
@@ -114,9 +115,15 @@ class Agent:
 
         # 3. Otherwise: route to the cheapest viable model tier, with
         #    resilience (retry + fallback) around the call.
+        #
+        #    IMPORTANT: routing is decided from the RAW prompt (classify_
+        #    complexity needs to see the user's actual words, not template
+        #    boilerplate) -- the master persona template is only applied to
+        #    the text that's actually sent to the model for generation.
         decision = classify_complexity(prompt)
+        rendered_prompt = render_assistant_prompt(prompt)
         try:
-            result = call_with_resilience(self._provider, prompt, decision.tier)
+            result = call_with_resilience(self._provider, rendered_prompt, decision.tier)
         except AllTiersFailedError as exc:
             return AgentResult(
                 answer=f"Sorry, I couldn't process this request right now ({exc}).",

@@ -25,20 +25,13 @@ from dataclasses import dataclass, field
 import httpx
 
 from app.config import MODEL_CATALOG, OLLAMA_BASE_URL
+from app.prompts import DEFAULT_COMPANY_NAME, render_react_system_prompt
 from app.tools import AVAILABLE_TOOLS
 
 MAX_ITERATIONS = 5  # hard cap so a confused model can't loop forever
 REACT_TIMEOUT_SECONDS = 120
 
 _TOOLS_BY_NAME = {t.name: t for t in AVAILABLE_TOOLS}
-
-_SYSTEM_PROMPT = (
-    "You are a helpful assistant with access to tools. Use a tool whenever it "
-    "would give a more accurate or verifiable answer than guessing (e.g. "
-    "arithmetic, internal company facts, or OS/system information). If no "
-    "tool is needed, answer directly. Do not call a tool more than once with "
-    "the same arguments."
-)
 
 
 def _build_tool_schemas() -> list[dict]:
@@ -82,10 +75,23 @@ class ReActResult:
 class ReActAgent:
     """LLM-driven tool-calling agent using a local Ollama model."""
 
-    def __init__(self, model: str | None = None, base_url: str = OLLAMA_BASE_URL) -> None:
+    def __init__(
+        self,
+        model: str | None = None,
+        base_url: str = OLLAMA_BASE_URL,
+        company_name: str = DEFAULT_COMPANY_NAME,
+    ) -> None:
         self._model = model or MODEL_CATALOG["balanced"].ollama_model
         self._base_url = base_url.rstrip("/")
         self._tool_schemas = _build_tool_schemas()
+        # Rendered once at construction time from the "master" template in
+        # app.prompts, parameterized by the REAL tool names this agent has
+        # access to -- so the prompt text can never drift out of sync with
+        # what tools actually exist.
+        self._system_prompt = render_react_system_prompt(
+            tool_names=[t.name for t in AVAILABLE_TOOLS],
+            company_name=company_name,
+        )
 
     def _call_model(self, messages: list[dict]) -> dict:
         response = httpx.post(
@@ -101,11 +107,21 @@ class ReActAgent:
         response.raise_for_status()
         return response.json()
 
-    def handle(self, prompt: str) -> ReActResult:
-        messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ]
+    def handle(self, prompt: str, history: list[dict] | None = None) -> ReActResult:
+        """Run the ReAct loop for ``prompt``.
+
+        ``history`` is an optional list of prior ``{"role": ..., "content": ...}``
+        turns (roles "user"/"assistant") from earlier in the conversation --
+        without it, every call is completely independent and the model has no
+        memory of anything said before (e.g. it won't know what "it" refers
+        to in a follow-up question). Tool-call/observation turns from earlier
+        exchanges are intentionally NOT replayed here (they'd bloat the
+        context very fast); only the user-visible text of each turn is kept.
+        """
+        messages = [{"role": "system", "content": self._system_prompt}]
+        if history:
+            messages.extend(history)
+        messages.append({"role": "user", "content": prompt})
         steps: list[ReActStep] = []
 
         for iteration in range(1, MAX_ITERATIONS + 1):

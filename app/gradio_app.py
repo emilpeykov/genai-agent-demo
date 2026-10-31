@@ -18,11 +18,40 @@ from app.react_agent import ReActAgent
 _rule_based_agent = Agent()
 _react_agent = ReActAgent()
 
+# The separator our own replies use to append debug metadata (tool used,
+# cost, etc.) below the actual answer -- see the "meta" strings below. When
+# feeding OUR PAST replies back to the model as conversation history, this
+# footer must be stripped first, or the model starts seeing (and sometimes
+# imitating) its own debug info instead of just the plain answer it gave.
+_META_SEPARATOR = "\n\n---\n"
+
+
+def _clean_history_for_model(history: list) -> list[dict]:
+    """Convert Gradio's chat history into the plain {role, content} messages
+    our agents expect, stripping the debug footer we append to replies.
+
+    Without this function, every call to the agent was completely stateless
+    -- the model never saw anything said earlier in the conversation, so a
+    follow-up like "what about X?" or "ok" made no sense to it.
+    """
+    cleaned: list[dict] = []
+    for turn in history:
+        # Gradio 5/6's ChatInterface uses the "messages" format: a flat list
+        # of {"role": "user"/"assistant", "content": ...} dicts.
+        role = turn.get("role")
+        content = turn.get("content")
+        if role not in ("user", "assistant") or not isinstance(content, str):
+            continue
+        if role == "assistant":
+            content = content.split(_META_SEPARATOR, 1)[0]
+        cleaned.append({"role": role, "content": content})
+    return cleaned
+
 
 def _chat_rule_based(message: str, history: list) -> str:
     result = _rule_based_agent.handle(message)
     meta = (
-        f"\n\n---\n*tool: `{result.tool_used or 'none'}` | "
+        f"{_META_SEPARATOR}*tool: `{result.tool_used or 'none'}` | "
         f"model: `{result.model or 'n/a'}` | tier: `{result.tier or 'n/a'}` | "
         f"cost: ${result.estimated_cost_usd:.5f} | "
         f"reason: {result.routing_reason}*"
@@ -31,7 +60,8 @@ def _chat_rule_based(message: str, history: list) -> str:
 
 
 def _chat_react(message: str, history: list) -> str:
-    result = _react_agent.handle(message)
+    conversation_history = _clean_history_for_model(history)
+    result = _react_agent.handle(message, history=conversation_history)
     if result.steps:
         steps_md = "\n".join(
             f"{i}. `{s.tool_name}({s.tool_args})` -> {s.observation[:200]}"
@@ -40,7 +70,7 @@ def _chat_react(message: str, history: list) -> str:
     else:
         steps_md = "(no tools called -- answered directly)"
     meta = (
-        f"\n\n---\n*model: `{result.model}` | iterations: {result.iterations} | "
+        f"{_META_SEPARATOR}*model: `{result.model}` | iterations: {result.iterations} | "
         f"hit iteration limit: {result.hit_iteration_limit}*\n\n**Tool calls:**\n{steps_md}"
     )
     return result.answer + meta

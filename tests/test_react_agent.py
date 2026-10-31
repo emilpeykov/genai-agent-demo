@@ -108,3 +108,38 @@ def test_react_agent_handles_unknown_tool_name_gracefully(mock_post):
     result = agent.handle("do something weird")
 
     assert "unknown tool" in result.steps[0].observation
+
+
+@patch("app.react_agent.httpx.post")
+def test_react_agent_includes_prior_history_in_the_model_request(mock_post):
+    # Regression test: without passing `history`, every call was completely
+    # stateless -- a follow-up like "what about that?" made no sense to the
+    # model because it never saw the earlier turns of the conversation.
+    mock_post.return_value = _mock_chat_response(
+        {"role": "assistant", "content": "The root directory is '/'."}
+    )
+
+    agent = ReActAgent(model="test-model")
+    history = [
+        {"role": "user", "content": "What is the current working directory?"},
+        {"role": "assistant", "content": "/Users/emil/project"},
+    ]
+    agent.handle("and what is the root directory?", history=history)
+
+    sent_messages = mock_post.call_args.kwargs["json"]["messages"]
+    # system prompt, then the two history turns, then the new user prompt.
+    assert sent_messages[0]["role"] == "system"
+    assert sent_messages[1] == history[0]
+    assert sent_messages[2] == history[1]
+    assert sent_messages[3] == {"role": "user", "content": "and what is the root directory?"}
+
+
+@patch("app.react_agent.httpx.post")
+def test_react_agent_works_without_history(mock_post):
+    mock_post.return_value = _mock_chat_response({"role": "assistant", "content": "Paris."})
+
+    agent = ReActAgent(model="test-model")
+    agent.handle("What's the capital of France?")
+
+    sent_messages = mock_post.call_args.kwargs["json"]["messages"]
+    assert len(sent_messages) == 2  # just system + the new user turn
