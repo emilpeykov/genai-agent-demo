@@ -29,7 +29,10 @@ from app.prompts import DEFAULT_COMPANY_NAME, render_react_system_prompt
 from app.tools import AVAILABLE_TOOLS
 
 MAX_ITERATIONS = 5  # hard cap so a confused model can't loop forever
-REACT_TIMEOUT_SECONDS = 120
+# Larger models (e.g. the 24B "powerful" tier model used by default below)
+# are noticeably slower per call on CPU/consumer GPUs than the smaller 8B
+# "balanced" model, so this is generous enough to avoid spurious timeouts.
+REACT_TIMEOUT_SECONDS = 180
 
 _TOOLS_BY_NAME = {t.name: t for t in AVAILABLE_TOOLS}
 
@@ -125,7 +128,16 @@ class ReActAgent:
         base_url: str = OLLAMA_BASE_URL,
         company_name: str = DEFAULT_COMPANY_NAME,
     ) -> None:
-        self._model = model or MODEL_CATALOG["balanced"].ollama_model
+        # Default to the "powerful" tier (devstral:24b locally) rather than
+        # "balanced" (llama3.1:8b) -- the 8B model was unreliable at basic
+        # reasoning/tool-use (e.g. couldn't correctly answer questions about
+        # its own codebase, and sometimes narrated tool calls as plain text
+        # instead of actually invoking them). The larger model is slower per
+        # call but far more reliable, which matters more for a demo meant to
+        # showcase agentic tool-use. Override via the `model=` constructor
+        # arg (or OLLAMA_POWERFUL_MODEL/OLLAMA_BALANCED_MODEL env vars) if
+        # you want to trade accuracy for speed.
+        self._model = model or MODEL_CATALOG["powerful"].ollama_model
         self._base_url = base_url.rstrip("/")
         self._tool_schemas = _build_tool_schemas()
         # Rendered once at construction time from the "master" template in

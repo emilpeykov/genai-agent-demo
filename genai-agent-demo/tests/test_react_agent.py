@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock, patch
 
+from app.config import MODEL_CATALOG
 from app.react_agent import ReActAgent
 
 
@@ -8,6 +9,17 @@ def _mock_chat_response(message: dict):
     mock_resp.raise_for_status = MagicMock()
     mock_resp.json.return_value = {"message": message}
     return mock_resp
+
+
+def test_react_agent_defaults_to_the_powerful_model_tier():
+    # Regression test: the "balanced" tier (llama3.1:8b) was unreliable at
+    # basic reasoning/tool-use (e.g. couldn't answer questions about its own
+    # codebase, sometimes narrated tool calls as plain text instead of
+    # invoking them). Defaulting to "powerful" (devstral:24b) trades speed
+    # for noticeably better reliability.
+    agent = ReActAgent()
+
+    assert agent._model == MODEL_CATALOG["powerful"].ollama_model
 
 
 @patch("app.react_agent.httpx.post")
