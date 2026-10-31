@@ -17,7 +17,9 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from app.config import MODEL_CATALOG, ModelSpec, ModelTier
+import httpx
+
+from app.config import MODEL_CATALOG, OLLAMA_BASE_URL, ModelSpec, ModelTier
 
 
 @dataclass
@@ -127,12 +129,63 @@ class OpenAIChatProvider(LLMProvider):
         )
 
 
-def get_default_provider() -> LLMProvider:
-    from app.config import OPENAI_API_KEY
+class OllamaProvider(LLMProvider):
+    """Runs inference against a locally-hosted model via Ollama.
 
-    if OPENAI_API_KEY:
+    Requires ``ollama serve`` running locally (default: http://localhost:11434)
+    with the relevant models pulled (e.g. ``ollama pull llama3.1:8b``).
+    Since the model runs on your own machine, there's no per-token API cost --
+    ``estimated_cost_usd`` is always 0.0, which is itself a useful data point
+    when discussing cost/latency tradeoffs (free but uses local compute/time).
+    """
+
+    def __init__(self, base_url: str = OLLAMA_BASE_URL) -> None:
+        self._base_url = base_url.rstrip("/")
+
+    def generate(self, prompt: str, tier: ModelTier) -> LLMResponse:
+        spec = MODEL_CATALOG[tier]
+        start = time.perf_counter()
+        try:
+            response = httpx.post(
+                f"{self._base_url}/api/generate",
+                json={"model": spec.ollama_model, "prompt": prompt, "stream": False},
+                timeout=120,  # local generation can be slow on CPU-only machines
+            )
+            response.raise_for_status()
+            data = response.json()
+        except httpx.HTTPError as exc:
+            raise LLMProviderError(
+                f"Could not reach Ollama at {self._base_url} for model "
+                f"'{spec.ollama_model}': {exc}"
+            ) from exc
+
+        text = data.get("response", "")
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        # Ollama reports actual token counts when available; fall back to the estimate.
+        tokens = data.get("eval_count", 0) + data.get("prompt_eval_count", 0)
+        if not tokens:
+            tokens = _estimate_tokens(prompt, text)
+
+        return LLMResponse(
+            text=text,
+            model=spec.ollama_model,
+            tier=tier,
+            latency_ms=latency_ms,
+            estimated_cost_usd=0.0,
+            tokens_used=tokens,
+        )
+
+
+def get_default_provider() -> LLMProvider:
+    from app.config import LLM_BACKEND, OPENAI_API_KEY
+
+    if LLM_BACKEND == "ollama":
+        return OllamaProvider()
+
+    if LLM_BACKEND == "openai" and OPENAI_API_KEY:
         try:
             return OpenAIChatProvider()
         except ImportError:  # langchain-openai not installed
             pass
+
     return MockLLMProvider()

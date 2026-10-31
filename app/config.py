@@ -20,6 +20,7 @@ class ModelSpec:
     cost_per_1k_tokens_usd: float
     typical_latency_ms: int
     failure_rate: float  # used by the mock provider to simulate real-world flakiness
+    ollama_model: str  # local model name to use when LLM_BACKEND=ollama
 
 
 # A small, realistic-looking routing table. In production this would be backed
@@ -31,6 +32,7 @@ MODEL_CATALOG: dict[ModelTier, ModelSpec] = {
         cost_per_1k_tokens_usd=0.00015,
         typical_latency_ms=350,
         failure_rate=0.03,
+        ollama_model=os.getenv("OLLAMA_FAST_MODEL", "qwen2.5:7b"),
     ),
     "balanced": ModelSpec(
         name=os.getenv("BALANCED_MODEL_NAME", "gpt-4o"),
@@ -38,6 +40,7 @@ MODEL_CATALOG: dict[ModelTier, ModelSpec] = {
         cost_per_1k_tokens_usd=0.0025,
         typical_latency_ms=900,
         failure_rate=0.02,
+        ollama_model=os.getenv("OLLAMA_BALANCED_MODEL", "llama3.1:8b"),
     ),
     "powerful": ModelSpec(
         name=os.getenv("POWERFUL_MODEL_NAME", "o1"),
@@ -45,6 +48,7 @@ MODEL_CATALOG: dict[ModelTier, ModelSpec] = {
         cost_per_1k_tokens_usd=0.015,
         typical_latency_ms=2200,
         failure_rate=0.01,
+        ollama_model=os.getenv("OLLAMA_POWERFUL_MODEL", "devstral:24b"),
     ),
 }
 
@@ -60,3 +64,8 @@ REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "8"))
 MAX_RETRIES_PER_TIER = int(os.getenv("MAX_RETRIES_PER_TIER", "2"))
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# Which provider backend to use: "mock" (default, offline/free), "ollama"
+# (local models via Ollama), or "openai" (real cloud API, needs OPENAI_API_KEY).
+LLM_BACKEND = os.getenv("LLM_BACKEND", "mock").lower()
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
