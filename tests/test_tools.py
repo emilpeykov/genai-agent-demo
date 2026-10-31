@@ -69,3 +69,15 @@ def test_run_shell_command_rejects_command_chaining():
 def test_run_shell_command_rejects_command_substitution():
     result = run_shell_command.invoke({"command": "echo $(whoami)"})
     assert result.startswith("Error: '$(' is not supported")
+
+
+def test_run_shell_command_docstring_warns_against_pipe_idiom():
+    # Regression guard: a real LLM repeatedly reached for "ls | wc -l" style
+    # pipelines when asked to "count files", since that's the standard Unix
+    # idiom it saw during training. The tool's docstring (which is sent to
+    # the model as its "description") must keep proactively warning against
+    # this, or that failure mode comes back. See tools like 'wc'/'grep' being
+    # explicitly called out as unavailable, with guidance to count manually.
+    docstring = run_shell_command.description
+    assert "wc" in docstring
+    assert "count" in docstring.lower()

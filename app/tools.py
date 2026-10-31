@@ -106,10 +106,18 @@ def run_shell_command(command: str) -> str:
     control, network access, package installs, etc.) is rejected before
     anything is executed. Pipes, redirects, and command chaining (|, ;, &,
     &&, ||, >, <, backticks, $()) are NOT supported -- pass exactly one
-    simple command with its flags/arguments, nothing more. Use this for
-    questions like "what's the current date/time", "what OS/user is this
-    running as", or "how much disk space is left" -- not as a general-purpose
-    shell.
+    simple command with its flags/arguments, nothing more.
+
+    IMPORTANT: there is no 'wc', 'grep', 'find', or 'awk' available, so you
+    CANNOT do "ls | wc -l" style counting/filtering pipelines. If asked to
+    count or filter something (e.g. "how many files are there"), call this
+    tool with just 'ls -la' and count or filter the lines in the result
+    YOURSELF in your final answer -- do not attempt a piped command, it
+    will always be rejected.
+
+    Use this for questions like "what's the current date/time", "what OS/
+    user is this running as", "how much disk space is left", or "list/count
+    the files in the current directory" -- not as a general-purpose shell.
     """
     for meta in _SHELL_METACHARACTERS:
         if meta in command:
