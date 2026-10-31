@@ -81,6 +81,19 @@ def _extract_text_tool_call(content: str) -> dict | None:
     return None
 
 
+def _mentions_tool_without_calling(content: str) -> bool:
+    """Heuristic: True if the text name-drops one of our real tools (e.g.
+    "you could use run_shell_command to check...") even though no tool was
+    actually called this turn -- i.e. the model described a plan instead of
+    executing it. Used to nudge the model into actually calling the tool
+    rather than just talking about doing so.
+    """
+    if not content:
+        return False
+    lowered = content.lower()
+    return any(name in lowered for name in _TOOLS_BY_NAME)
+
+
 def _build_tool_schemas() -> list[dict]:
     """Convert our LangChain @tool-decorated functions into the JSON schema
     format Ollama's (and OpenAI's) tool-calling APIs expect."""
@@ -179,6 +192,7 @@ class ReActAgent:
             messages.extend(history)
         messages.append({"role": "user", "content": prompt})
         steps: list[ReActStep] = []
+        nudged = False  # only nudge once, to avoid looping forever on a stubborn model
 
         for iteration in range(1, MAX_ITERATIONS + 1):
             data = self._call_model(messages)
@@ -191,11 +205,31 @@ class ReActAgent:
                 # text (see _extract_text_tool_call) -- otherwise that text
                 # would be silently returned as "the answer" and the tool
                 # the model clearly intended to run would never execute.
-                fallback_call = _extract_text_tool_call(message.get("content", ""))
+                content = message.get("content", "")
+                fallback_call = _extract_text_tool_call(content)
                 if fallback_call is None:
+                    # Second failure mode: the model merely TALKS about which
+                    # tool it could use (e.g. "you can use list_directory to
+                    # check...") instead of either answering plainly or
+                    # actually calling it. Give it one chance to correct
+                    # course before accepting the answer as final.
+                    if not nudged and not steps and _mentions_tool_without_calling(content):
+                        nudged = True
+                        messages.append(message)
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "You described a tool instead of actually calling it. "
+                                    "If you need to verify something, call the tool now via "
+                                    "the tool-calling mechanism -- do not just describe it."
+                                ),
+                            }
+                        )
+                        continue
                     # The model decided it has enough info -- this IS the final answer.
                     return ReActResult(
-                        answer=message.get("content", ""),
+                        answer=content,
                         steps=steps,
                         iterations=iteration,
                         model=self._model,

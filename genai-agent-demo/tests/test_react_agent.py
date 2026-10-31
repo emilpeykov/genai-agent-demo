@@ -201,3 +201,61 @@ def test_react_agent_treats_unrecognized_text_json_as_a_real_final_answer(mock_p
 
     assert result.steps == []
     assert "config looks like" in result.answer
+
+
+@patch("app.react_agent.httpx.post")
+def test_react_agent_nudges_a_model_that_only_describes_a_tool_without_calling_it(mock_post):
+    # Regression test: some models answer with meta-commentary like "you
+    # could use list_directory to check that" instead of EITHER answering
+    # directly OR actually calling the tool. Without a nudge, that
+    # description would be returned verbatim as "the answer" and nothing
+    # would ever actually get verified.
+    mock_post.side_effect = [
+        _mock_chat_response(
+            {
+                "role": "assistant",
+                "content": "You can use list_directory to check if the file exists.",
+            }
+        ),
+        _mock_chat_response(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"function": {"name": "list_directory", "arguments": {"path": "."}}}
+                ],
+            }
+        ),
+        _mock_chat_response({"role": "assistant", "content": "Yes, the file exists."}),
+    ]
+
+    agent = ReActAgent(model="test-model")
+    result = agent.handle("does README.md exist?")
+
+    assert mock_post.call_count == 3
+    assert len(result.steps) == 1
+    assert result.steps[0].tool_name == "list_directory"
+    assert result.answer == "Yes, the file exists."
+
+    # The nudge message should have been injected before the second call.
+    second_call_messages = mock_post.call_args_list[1].kwargs["json"]["messages"]
+    assert any(
+        "instead of actually calling it" in m.get("content", "") for m in second_call_messages
+    )
+
+
+@patch("app.react_agent.httpx.post")
+def test_react_agent_only_nudges_once_then_accepts_whatever_follows(mock_post):
+    # Guard against infinite loops: if the model keeps describing instead of
+    # calling even after being nudged, we must accept the next answer as
+    # final rather than nudging forever.
+    mock_post.return_value = _mock_chat_response(
+        {"role": "assistant", "content": "You could use calculator to work that out."}
+    )
+
+    agent = ReActAgent(model="test-model")
+    result = agent.handle("what is 2+2")
+
+    assert mock_post.call_count == 2  # one normal call + one nudge retry, then accepted
+    assert result.steps == []
+    assert "calculator" in result.answer
