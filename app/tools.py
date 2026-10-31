@@ -15,6 +15,8 @@ from pathlib import Path
 import psutil
 from langchain_core.tools import tool
 
+from app.rag import rag_search
+
 _ALLOWED_OPERATORS = {
     ast.Add: op.add,
     ast.Sub: op.sub,
@@ -192,4 +194,11 @@ def system_resources() -> str:
     )
 
 
-AVAILABLE_TOOLS = [calculator, knowledge_base_lookup, run_shell_command, list_directory, system_resources]
+AVAILABLE_TOOLS = [
+    calculator,
+    knowledge_base_lookup,
+    run_shell_command,
+    list_directory,
+    system_resources,
+    rag_search,
+]
