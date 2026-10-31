@@ -25,9 +25,11 @@ _KB_TRIGGER = re.compile(r"\b(refund policy|sla|pricing)\b", re.IGNORECASE)
 
 # Maps a user-intent phrase to the exact, fixed OS command we'll run on their
 # behalf. Note we never pass the user's raw text as the command itself --
-# we map *intent* to one specific, pre-approved command. (The upcoming
-# LLM-driven agent version will instead let the model choose the command
-# text directly, relying on run_shell_command's own allowlist for safety.)
+# we map *intent* to one specific, pre-approved command. This keeps the
+# rule-based agent's own behavior safe/deterministic even though
+# run_shell_command itself now runs arbitrary shell commands with no
+# allowlist (the LLM-driven ReActAgent is the one that relies on that full
+# freedom, deciding the exact command text itself).
 _SHELL_INTENTS: list[tuple[re.Pattern[str], str]] = [
     (
         re.compile(

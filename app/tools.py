@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import ast
 import operator as op
-import shlex
 import subprocess
+from pathlib import Path
 
+import psutil
 from langchain_core.tools import tool
 
 _ALLOWED_OPERATORS = {
@@ -63,102 +64,132 @@ def knowledge_base_lookup(topic: str) -> str:
     return mock_kb.get(topic.strip().lower(), f"No internal knowledge found for '{topic}'.")
 
 
-# Security model for the shell tool: an ALLOWLIST of read-only, informational
-# command *names* (not a denylist of "bad" ones -- denylists are notoriously
-# easy to bypass). Combined with shlex.split() + subprocess with shell=False
-# (so there's no shell metacharacter injection, e.g. "; rm -rf /" is just
-# treated as a literal, harmless argument) and a hard timeout. This is the
-# single biggest real-world risk area in "agents with OS access": an LLM can
-# be tricked via prompt injection into running something destructive, so the
-# tool itself -- not the LLM's good intentions -- has to enforce the boundary.
-ALLOWED_SHELL_COMMANDS = {
-    "pwd",
-    "date",
-    "whoami",
-    "uname",
-    "hostname",
-    "uptime",
-    "df",
-    "ls",
-    "echo",
-}
-
-SHELL_COMMAND_TIMEOUT_SECONDS = 5
-SHELL_OUTPUT_MAX_CHARS = 2000
-
-# Shell metacharacters that only have meaning when a real shell interprets
-# them (pipes, chaining, redirection, substitution). Because we deliberately
-# run with shell=False, these are NEVER actually dangerous -- shlex.split()
-# just treats them as literal, meaningless argument text, which is SAFE but
-# produces confusing per-argument "No such file or directory" style errors
-# (e.g. "ls -l | wc -l" becomes ls being asked to open files named "-l",
-# "|", "wc", "-l"). We detect them up front and fail with one clear message
-# instead, so a calling LLM gets an actionable signal to retry differently.
-_SHELL_METACHARACTERS = ("|", ";", "&", "`", "$(", ">", "<", "&&", "||")
+# NOTE ON SECURITY MODEL (read this before reusing this tool anywhere else):
+# This was originally an ALLOWLIST of read-only command names + shell=False,
+# which is the safe pattern for any real/production system: the LLM's
+# intentions don't matter, the tool itself enforces what can physically run.
+#
+# At the user's explicit request, that boundary has been REMOVED below so the
+# model has full freedom to run any shell command it decides it needs,
+# including pipes/redirects/chaining via a real shell (shell=True). This is
+# appropriate ONLY for a local demo/learning sandbox running as your own user
+# on your own machine. It is NOT safe to expose this to untrusted input, a
+# multi-user service, or anything prompt-injectable from the outside (e.g. a
+# tool that reads attacker-controlled web pages) -- a model can be tricked
+# into running destructive commands (rm -rf, curl | sh, etc.) and nothing
+# here will stop it. If you ever productionize this, bring back the allowlist.
+SHELL_COMMAND_TIMEOUT_SECONDS = 10
+SHELL_OUTPUT_MAX_CHARS = 4000
 
 
 @tool
 def run_shell_command(command: str) -> str:
-    """Run ONE safe, read-only OS command and return its output.
+    """Run any shell command (full bash/zsh syntax: pipes, redirects, chaining,
+    globs, all standard Unix tools like wc/grep/find/awk/sed/xargs) and return
+    its combined stdout+stderr.
 
-    Only informational commands are allowed (e.g. 'pwd', 'date', 'whoami',
-    'uname -a', 'df -h', 'ls -la'). Anything else (file writes, process
-    control, network access, package installs, etc.) is rejected before
-    anything is executed. Pipes, redirects, and command chaining (|, ;, &,
-    &&, ||, >, <, backticks, $()) are NOT supported -- pass exactly one
-    simple command with its flags/arguments, nothing more.
+    This has NO allowlist and NO restrictions on which programs or shell
+    features can be used -- you have full freedom to run whatever command is
+    needed to answer the question, including multi-step pipelines like
+    "ls -la | wc -l" or "find . -name '*.py' | xargs wc -l". There is a
+    10-second timeout and output is truncated if extremely long, but
+    otherwise this behaves like a normal shell prompt. Use it for file
+    system, process, OS, and system-info questions, or anything else where
+    running a real command gives a more accurate answer than guessing.
 
-    IMPORTANT: there is no 'wc', 'grep', 'find', or 'awk' available, so you
-    CANNOT do "ls | wc -l" style counting/filtering pipelines. If asked to
-    count or filter something (e.g. "how many files are there"), call this
-    tool with just 'ls -la' and count or filter the lines in the result
-    YOURSELF in your final answer -- do not attempt a piped command, it
-    will always be rejected.
-
-    Use this for questions like "what's the current date/time", "what OS/
-    user is this running as", "how much disk space is left", or "list/count
-    the files in the current directory" -- not as a general-purpose shell.
+    THIS RUNS ON THE SERVER'S OWN MACHINE WITH THE SERVER'S OWN PERMISSIONS --
+    avoid destructive commands (deleting/overwriting files, killing
+    processes, modifying system state) unless the user has clearly asked for
+    exactly that.
     """
-    for meta in _SHELL_METACHARACTERS:
-        if meta in command:
-            return (
-                f"Error: '{meta}' is not supported -- this tool runs exactly one "
-                "simple command with no pipes, redirects, or chaining. "
-                f"Call it again with a single allowed command instead (one of: "
-                f"{', '.join(sorted(ALLOWED_SHELL_COMMANDS))})."
-            )
-
-    try:
-        args = shlex.split(command)
-    except ValueError as exc:
-        return f"Error: could not parse command ({exc})"
-
-    if not args:
+    command = command.strip()
+    if not command:
         return "Error: empty command"
-
-    program = args[0]
-    if program not in ALLOWED_SHELL_COMMANDS:
-        allowed = ", ".join(sorted(ALLOWED_SHELL_COMMANDS))
-        return f"Error: '{program}' is not an allowed command. Allowed commands: {allowed}"
 
     try:
         result = subprocess.run(
-            args,
-            shell=False,  # critical: args are passed directly to exec(), no shell parsing/injection
+            command,
+            shell=True,  # intentional: gives the model a real shell (pipes, redirects, globs, etc.)
             capture_output=True,
             text=True,
             timeout=SHELL_COMMAND_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
         return f"Error: command timed out after {SHELL_COMMAND_TIMEOUT_SECONDS}s"
-    except FileNotFoundError:
-        return f"Error: '{program}' is not available on this system"
 
     output = (result.stdout or "") + (result.stderr or "")
     output = output.strip() or "(command produced no output)"
+    if result.returncode != 0:
+        output = f"[exit code {result.returncode}]\n{output}"
     if len(output) > SHELL_OUTPUT_MAX_CHARS:
         output = output[:SHELL_OUTPUT_MAX_CHARS] + "... [truncated]"
     return output
 
 
-AVAILABLE_TOOLS = [calculator, knowledge_base_lookup, run_shell_command]
+# These next two tools demonstrate the alternative to "wrap a shell command":
+# use a native Python library (pathlib, psutil) instead of subprocess at all.
+# No shlex parsing, no shell metacharacters to worry about, and the model
+# gets exact structured numbers instead of having to parse free-text output
+# or reach for a Unix pipe idiom (ls | wc -l) that this project doesn't
+# support. Any Python library can be turned into a tool this way: write a
+# plain function, decorate it with @tool, give it a clear docstring.
+
+DIRECTORY_LISTING_MAX_ENTRIES = 200
+
+
+@tool
+def list_directory(path: str = ".") -> str:
+    """List files and subdirectories directly under a given path, with a count.
+
+    Returns the total number of files, the total number of subdirectories,
+    and their names -- computed directly in Python (pathlib), not by running
+    'ls' and parsing its text. Use this whenever asked to count, list, or
+    check for the existence of files/folders -- it always gives an exact
+    count, so there is never a need to pipe output through 'wc' or 'grep'.
+
+    'path' defaults to the current directory ('.') if not given. Relative
+    paths are resolved from the server's working directory.
+    """
+    try:
+        target = Path(path).expanduser()
+        if not target.exists():
+            return f"Error: path '{path}' does not exist"
+        if not target.is_dir():
+            return f"Error: '{path}' is not a directory"
+        entries = sorted(target.iterdir(), key=lambda p: p.name)
+    except OSError as exc:
+        return f"Error: could not list '{path}' ({exc})"
+
+    files = [e.name for e in entries if e.is_file()]
+    dirs = [e.name for e in entries if e.is_dir()]
+    shown_files = files[:DIRECTORY_LISTING_MAX_ENTRIES]
+    shown_dirs = dirs[:DIRECTORY_LISTING_MAX_ENTRIES]
+    summary = (
+        f"{len(files)} file(s), {len(dirs)} subdirectory(ies) in '{path}'.\n"
+        f"Files: {', '.join(shown_files) if shown_files else '(none)'}\n"
+        f"Subdirectories: {', '.join(shown_dirs) if shown_dirs else '(none)'}"
+    )
+    return summary
+
+
+@tool
+def system_resources() -> str:
+    """Report current CPU usage, memory usage, and disk usage as exact numbers.
+
+    Computed directly via the 'psutil' library (no shelling out to 'df',
+    'top', or 'uptime' and parsing their text). Use this for questions like
+    "how much memory/disk/CPU is being used right now".
+    """
+    cpu_percent = psutil.cpu_percent(interval=0.2)
+    mem = psutil.virtual_memory()
+    disk = psutil.disk_usage("/")
+    return (
+        f"CPU usage: {cpu_percent:.1f}%\n"
+        f"Memory: {mem.percent:.1f}% used "
+        f"({mem.used // (1024 ** 2)} MB used / {mem.total // (1024 ** 2)} MB total)\n"
+        f"Disk ('/'): {disk.percent:.1f}% used "
+        f"({disk.used // (1024 ** 3)} GB used / {disk.total // (1024 ** 3)} GB total)"
+    )
+
+
+AVAILABLE_TOOLS = [calculator, knowledge_base_lookup, run_shell_command, list_directory, system_resources]

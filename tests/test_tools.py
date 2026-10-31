@@ -36,48 +36,34 @@ def test_run_shell_command_allows_echo_with_args():
     assert result == "hello world"
 
 
-def test_run_shell_command_rejects_disallowed_program():
-    result = run_shell_command.invoke({"command": "rm -rf /"})
-    assert result.startswith("Error: 'rm' is not an allowed command")
-
-
-def test_run_shell_command_rejects_unparseable_input():
-    result = run_shell_command.invoke({"command": "echo 'unterminated"})
-    assert result.startswith("Error: could not parse command")
-
-
 def test_run_shell_command_rejects_empty_command():
     result = run_shell_command.invoke({"command": "   "})
     assert result == "Error: empty command"
 
 
-def test_run_shell_command_rejects_pipe_with_clear_message():
-    # Regression test: a real LLM once tried "ls -l | grep ^- | wc -l".
-    # Since we run with shell=False, "|" was previously treated as a
-    # literal (meaningless) argument, producing confusing per-token
-    # "No such file or directory" errors instead of one clear message.
-    result = run_shell_command.invoke({"command": "ls -l | grep ^- | wc -l"})
-    assert result.startswith("Error: '|' is not supported")
-    assert "No such file or directory" not in result
+def test_run_shell_command_supports_pipes():
+    # Unlike the old allowlisted version, this now runs through a real shell
+    # (shell=True), so pipes/redirects/chaining all work as normal bash.
+    result = run_shell_command.invoke({"command": "echo hello | wc -l"})
+    assert result.strip() == "1"
 
 
-def test_run_shell_command_rejects_command_chaining():
-    result = run_shell_command.invoke({"command": "pwd; rm -rf /"})
-    assert result.startswith("Error: ';' is not supported")
+def test_run_shell_command_supports_arbitrary_programs():
+    # No allowlist anymore -- any program on PATH can be run, not just a
+    # fixed safe set.
+    result = run_shell_command.invoke({"command": "python3 -c 'print(2 + 2)'"})
+    assert result.strip() == "4"
 
 
-def test_run_shell_command_rejects_command_substitution():
-    result = run_shell_command.invoke({"command": "echo $(whoami)"})
-    assert result.startswith("Error: '$(' is not supported")
+def test_run_shell_command_reports_nonzero_exit_code():
+    result = run_shell_command.invoke({"command": "ls /path/does/not/exist"})
+    assert result.startswith("[exit code")
 
 
-def test_run_shell_command_docstring_warns_against_pipe_idiom():
-    # Regression guard: a real LLM repeatedly reached for "ls | wc -l" style
-    # pipelines when asked to "count files", since that's the standard Unix
-    # idiom it saw during training. The tool's docstring (which is sent to
-    # the model as its "description") must keep proactively warning against
-    # this, or that failure mode comes back. See tools like 'wc'/'grep' being
-    # explicitly called out as unavailable, with guidance to count manually.
+def test_run_shell_command_docstring_mentions_full_freedom():
+    # The docstring is literally the only information the LLM has about this
+    # tool's capabilities -- it must reflect that pipes/chaining/any program
+    # are allowed now, not the old restricted allowlist behavior.
     docstring = run_shell_command.description
-    assert "wc" in docstring
-    assert "count" in docstring.lower()
+    assert "pipes" in docstring.lower()
+    assert "no allowlist" in docstring.lower() or "no restrictions" in docstring.lower()
