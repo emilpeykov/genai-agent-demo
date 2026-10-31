@@ -17,6 +17,14 @@ def test_agent_routes_kb_question_to_tool():
     assert "business days" in result.answer
 
 
+def test_agent_routes_os_info_question_to_shell_tool():
+    agent = Agent(provider=MockLLMProvider(seed=1))
+    result = agent.handle("What is the current working directory?")
+    assert result.tool_used == "run_shell_command"
+    assert result.estimated_cost_usd == 0.0
+    assert "/" in result.answer
+
+
 def test_agent_routes_general_question_to_llm():
     agent = Agent(provider=MockLLMProvider(seed=1))
     result = agent.handle("What's the capital of France?")

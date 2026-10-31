@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import ast
 import operator as op
+import shlex
+import subprocess
 
 from langchain_core.tools import tool
 
@@ -61,4 +63,72 @@ def knowledge_base_lookup(topic: str) -> str:
     return mock_kb.get(topic.strip().lower(), f"No internal knowledge found for '{topic}'.")
 
 
-AVAILABLE_TOOLS = [calculator, knowledge_base_lookup]
+# Security model for the shell tool: an ALLOWLIST of read-only, informational
+# command *names* (not a denylist of "bad" ones -- denylists are notoriously
+# easy to bypass). Combined with shlex.split() + subprocess with shell=False
+# (so there's no shell metacharacter injection, e.g. "; rm -rf /" is just
+# treated as a literal, harmless argument) and a hard timeout. This is the
+# single biggest real-world risk area in "agents with OS access": an LLM can
+# be tricked via prompt injection into running something destructive, so the
+# tool itself -- not the LLM's good intentions -- has to enforce the boundary.
+ALLOWED_SHELL_COMMANDS = {
+    "pwd",
+    "date",
+    "whoami",
+    "uname",
+    "hostname",
+    "uptime",
+    "df",
+    "ls",
+    "echo",
+}
+
+SHELL_COMMAND_TIMEOUT_SECONDS = 5
+SHELL_OUTPUT_MAX_CHARS = 2000
+
+
+@tool
+def run_shell_command(command: str) -> str:
+    """Run a safe, read-only OS command and return its output.
+
+    Only informational commands are allowed (e.g. 'pwd', 'date', 'whoami',
+    'uname -a', 'df -h', 'ls -la'). Anything else (file writes, process
+    control, network access, package installs, etc.) is rejected before
+    anything is executed. Use this for questions like "what's the current
+    date/time", "what OS/user is this running as", or "how much disk space
+    is left" -- not as a general-purpose shell.
+    """
+    try:
+        args = shlex.split(command)
+    except ValueError as exc:
+        return f"Error: could not parse command ({exc})"
+
+    if not args:
+        return "Error: empty command"
+
+    program = args[0]
+    if program not in ALLOWED_SHELL_COMMANDS:
+        allowed = ", ".join(sorted(ALLOWED_SHELL_COMMANDS))
+        return f"Error: '{program}' is not an allowed command. Allowed commands: {allowed}"
+
+    try:
+        result = subprocess.run(
+            args,
+            shell=False,  # critical: args are passed directly to exec(), no shell parsing/injection
+            capture_output=True,
+            text=True,
+            timeout=SHELL_COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return f"Error: command timed out after {SHELL_COMMAND_TIMEOUT_SECONDS}s"
+    except FileNotFoundError:
+        return f"Error: '{program}' is not available on this system"
+
+    output = (result.stdout or "") + (result.stderr or "")
+    output = output.strip() or "(command produced no output)"
+    if len(output) > SHELL_OUTPUT_MAX_CHARS:
+        output = output[:SHELL_OUTPUT_MAX_CHARS] + "... [truncated]"
+    return output
+
+
+AVAILABLE_TOOLS = [calculator, knowledge_base_lookup, run_shell_command]

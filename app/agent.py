@@ -23,6 +23,19 @@ from app.tools import AVAILABLE_TOOLS
 _MATH_PATTERN = re.compile(r"^\s*[-+]?[\d\s().+\-*/]+\s*$")
 _KB_TRIGGER = re.compile(r"\b(refund policy|sla|pricing)\b", re.IGNORECASE)
 
+# Maps a user-intent phrase to the exact, fixed OS command we'll run on their
+# behalf. Note we never pass the user's raw text as the command itself --
+# we map *intent* to one specific, pre-approved command. (The upcoming
+# LLM-driven agent version will instead let the model choose the command
+# text directly, relying on run_shell_command's own allowlist for safety.)
+_SHELL_INTENTS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\b(what time|current time|what('s| is) the date|today'?s date)\b", re.IGNORECASE), "date"),
+    (re.compile(r"\b(current (directory|folder)|working directory|pwd)\b", re.IGNORECASE), "pwd"),
+    (re.compile(r"\b(disk (space|usage)|free space)\b", re.IGNORECASE), "df -h"),
+    (re.compile(r"\b(who am i|current user)\b", re.IGNORECASE), "whoami"),
+    (re.compile(r"\b(system info|os version|operating system)\b", re.IGNORECASE), "uname -a"),
+]
+
 _TOOLS_BY_NAME = {t.name: t for t in AVAILABLE_TOOLS}
 
 
@@ -75,7 +88,23 @@ class Agent:
                 routing_reason="Matched internal knowledge-base topic; routed to KB tool.",
             )
 
-        # 2. Otherwise: route to the cheapest viable model tier, with
+        # 2. Known OS-info intents: map to one specific, pre-approved command.
+        for pattern, command in _SHELL_INTENTS:
+            if pattern.search(prompt):
+                result = _TOOLS_BY_NAME["run_shell_command"].invoke({"command": command})
+                return AgentResult(
+                    answer=result,
+                    tool_used="run_shell_command",
+                    model=None,
+                    tier=None,
+                    latency_ms=0,
+                    estimated_cost_usd=0.0,
+                    retries=0,
+                    degraded=False,
+                    routing_reason=f"Matched OS-info intent; ran allowed command '{command}'.",
+                )
+
+        # 3. Otherwise: route to the cheapest viable model tier, with
         #    resilience (retry + fallback) around the call.
         decision = classify_complexity(prompt)
         try:
