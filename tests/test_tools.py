@@ -49,3 +49,23 @@ def test_run_shell_command_rejects_unparseable_input():
 def test_run_shell_command_rejects_empty_command():
     result = run_shell_command.invoke({"command": "   "})
     assert result == "Error: empty command"
+
+
+def test_run_shell_command_rejects_pipe_with_clear_message():
+    # Regression test: a real LLM once tried "ls -l | grep ^- | wc -l".
+    # Since we run with shell=False, "|" was previously treated as a
+    # literal (meaningless) argument, producing confusing per-token
+    # "No such file or directory" errors instead of one clear message.
+    result = run_shell_command.invoke({"command": "ls -l | grep ^- | wc -l"})
+    assert result.startswith("Error: '|' is not supported")
+    assert "No such file or directory" not in result
+
+
+def test_run_shell_command_rejects_command_chaining():
+    result = run_shell_command.invoke({"command": "pwd; rm -rf /"})
+    assert result.startswith("Error: ';' is not supported")
+
+
+def test_run_shell_command_rejects_command_substitution():
+    result = run_shell_command.invoke({"command": "echo $(whoami)"})
+    assert result.startswith("Error: '$(' is not supported")

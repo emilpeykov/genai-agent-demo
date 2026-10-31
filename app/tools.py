@@ -86,18 +86,40 @@ ALLOWED_SHELL_COMMANDS = {
 SHELL_COMMAND_TIMEOUT_SECONDS = 5
 SHELL_OUTPUT_MAX_CHARS = 2000
 
+# Shell metacharacters that only have meaning when a real shell interprets
+# them (pipes, chaining, redirection, substitution). Because we deliberately
+# run with shell=False, these are NEVER actually dangerous -- shlex.split()
+# just treats them as literal, meaningless argument text, which is SAFE but
+# produces confusing per-argument "No such file or directory" style errors
+# (e.g. "ls -l | wc -l" becomes ls being asked to open files named "-l",
+# "|", "wc", "-l"). We detect them up front and fail with one clear message
+# instead, so a calling LLM gets an actionable signal to retry differently.
+_SHELL_METACHARACTERS = ("|", ";", "&", "`", "$(", ">", "<", "&&", "||")
+
 
 @tool
 def run_shell_command(command: str) -> str:
-    """Run a safe, read-only OS command and return its output.
+    """Run ONE safe, read-only OS command and return its output.
 
     Only informational commands are allowed (e.g. 'pwd', 'date', 'whoami',
     'uname -a', 'df -h', 'ls -la'). Anything else (file writes, process
     control, network access, package installs, etc.) is rejected before
-    anything is executed. Use this for questions like "what's the current
-    date/time", "what OS/user is this running as", or "how much disk space
-    is left" -- not as a general-purpose shell.
+    anything is executed. Pipes, redirects, and command chaining (|, ;, &,
+    &&, ||, >, <, backticks, $()) are NOT supported -- pass exactly one
+    simple command with its flags/arguments, nothing more. Use this for
+    questions like "what's the current date/time", "what OS/user is this
+    running as", or "how much disk space is left" -- not as a general-purpose
+    shell.
     """
+    for meta in _SHELL_METACHARACTERS:
+        if meta in command:
+            return (
+                f"Error: '{meta}' is not supported -- this tool runs exactly one "
+                "simple command with no pipes, redirects, or chaining. "
+                f"Call it again with a single allowed command instead (one of: "
+                f"{', '.join(sorted(ALLOWED_SHELL_COMMANDS))})."
+            )
+
     try:
         args = shlex.split(command)
     except ValueError as exc:
