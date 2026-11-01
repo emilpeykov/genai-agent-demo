@@ -52,3 +52,16 @@ def test_render_react_system_prompt_tells_model_to_prefer_read_file_for_named_fi
 
     assert "read_file" in rendered
     assert "readme_search" in rendered
+
+
+def test_render_react_system_prompt_tells_model_memory_does_not_need_tools():
+    # Regression test: asked to "remember" a fact, a model was observed
+    # calling write_file to persist it (sometimes even emitting the tool
+    # call as raw JSON text instead of a real structured tool call). The
+    # prompt must make clear that conversation history IS the memory, and
+    # that tool calls must go through the real tool-calling mechanism.
+    rendered = render_react_system_prompt(["write_file"])
+
+    assert "ALREADY remember" in rendered
+    assert "never write out a JSON object" in rendered
+

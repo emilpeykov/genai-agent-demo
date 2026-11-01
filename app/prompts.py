@@ -91,7 +91,13 @@ REACT_SYSTEM_TEMPLATE = PromptTemplate.from_template(
     "'old_text' matches exactly. You also have 'file_search' (find files by "
     "name pattern), 'copy_file', 'move_file', and 'file_delete' for other "
     "file-system operations -- use whichever tool most directly matches "
-    "what the user asked for."
+    "what the user asked for. CONVERSATION MEMORY: if facts from earlier in "
+    "this same conversation (e.g. the user's name, something they told you) "
+    "are visible above in the message history, you ALREADY remember them -- "
+    "do NOT call 'write_file' or any other tool to 'save' or 'remember' "
+    "them; that is unnecessary and not what those tools are for. Only use a "
+    "tool for its own stated purpose (e.g. actually reading/writing a real "
+    "file on disk the user asked about)."
 )
 
 

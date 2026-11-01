@@ -42,18 +42,30 @@ from collections.abc import Iterator
 from datetime import date
 
 from langchain_core.chat_history import BaseChatMessageHistory, InMemoryChatMessageHistory
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.output_parsers import BaseOutputParser, StrOutputParser
 from langchain_core.prompts import BasePromptTemplate
 from langchain_core.runnables import Runnable, RunnableGenerator, RunnableLambda
 from langchain_core.runnables.history import RunnableWithMessageHistory
 
 from app.config import MODEL_CATALOG, OLLAMA_BASE_URL, ModelTier
-from app.prompts import ASSISTANT_PERSONA_TEMPLATE, DEFAULT_COMPANY_NAME
+from app.prompts import ASSISTANT_PERSONA_TEMPLATE, DEFAULT_COMPANY_NAME, render_react_system_prompt
 from app.providers import LLMProvider, get_default_provider
 from app.tools import AVAILABLE_TOOLS
 
 _TOOLS_BY_NAME = {t.name: t for t in AVAILABLE_TOOLS}
+
+# Same master system prompt ReActAgent uses (app.prompts.REACT_SYSTEM_TEMPLATE),
+# rendered once with the REAL tool names/descriptions available here. Without
+# this, the model was never told HOW to call tools correctly, nor that
+# conversation memory is automatic -- in practice this caused a real bug: a
+# lightweight model, asked to "remember" a fact, would try to literally call
+# 'write_file' to persist it (and sometimes emit the tool call as raw JSON
+# text instead of a real structured tool call, since nothing told it not to).
+# ReActAgent's system prompt already explicitly rules both mistakes out, so
+# reusing it here (rather than leaving these chains with NO system message at
+# all) fixes the same class of bug in this code path too.
+_SYSTEM_PROMPT = render_react_system_prompt(tool_names=[t.name for t in AVAILABLE_TOOLS])
 
 # Per-session chat history store, keyed by an arbitrary caller-supplied
 # ``session_id``. Uses LangChain's own PREBUILT ``InMemoryChatMessageHistory``
@@ -223,7 +235,11 @@ def _run_tool_calling_loop(
     ``user_request`` so the model has real conversational memory. Omit it
     (the default) for the original stateless, single-turn behavior.
     """
-    messages: list[BaseMessage] = list(chat_history or []) + [HumanMessage(content=user_request)]
+    messages: list[BaseMessage] = (
+        [SystemMessage(content=_SYSTEM_PROMPT)]
+        + list(chat_history or [])
+        + [HumanMessage(content=user_request)]
+    )
     last_ai_message: AIMessage | None = None
 
     for _ in range(MAX_TOOL_ROUNDS):
@@ -322,7 +338,11 @@ def _stream_tool_calling_loop(
     nothing (or a few stray words some models emit), and only the FINAL round
     (the one with no tool calls) produces the real streamed answer text.
     """
-    messages: list[BaseMessage] = list(chat_history or []) + [HumanMessage(content=user_request)]
+    messages: list[BaseMessage] = (
+        [SystemMessage(content=_SYSTEM_PROMPT)]
+        + list(chat_history or [])
+        + [HumanMessage(content=user_request)]
+    )
 
     for _ in range(MAX_TOOL_ROUNDS):
         full: AIMessage | None = None

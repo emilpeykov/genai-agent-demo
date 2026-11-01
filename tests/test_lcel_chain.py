@@ -118,6 +118,24 @@ def test_build_tool_calling_chain_answers_directly_when_no_tool_call():
     llm_with_tools.invoke.assert_called_once()
 
 
+def test_build_tool_calling_chain_sends_a_system_prompt_with_tool_guidance():
+    # Regression test: without a system prompt, a model asked to "remember"
+    # a fact would sometimes try to literally call write_file to persist it
+    # (or emit a tool call as raw JSON text) -- see app.prompts.REACT_SYSTEM_TEMPLATE's
+    # "CONVERSATION MEMORY"/"never write out a JSON object..." guidance.
+    llm_with_tools = MagicMock()
+    llm_with_tools.invoke.return_value = AIMessage(content="ok", tool_calls=[])
+
+    chain = build_tool_calling_chain(llm_with_tools=llm_with_tools)
+    chain.invoke({"user_request": "My name is Ada. Remember that."})
+
+    sent_messages = llm_with_tools.invoke.call_args[0][0]
+    assert sent_messages[0].__class__.__name__ == "SystemMessage"
+    assert "write_file" in sent_messages[0].content
+    assert "ALREADY remember" in sent_messages[0].content
+    assert "never write out a JSON object" in sent_messages[0].content
+
+
 def test_build_tool_calling_chain_executes_tool_and_returns_final_answer():
     llm_with_tools = MagicMock()
     first_response = AIMessage(
@@ -235,6 +253,19 @@ def test_build_tool_calling_chain_streaming_yields_chunks_when_no_tool_call():
 
     assert chunks == ["Hello", ", world", "!"]
     llm_with_tools.stream.assert_called_once()
+
+
+def test_build_tool_calling_chain_streaming_sends_a_system_prompt_with_tool_guidance():
+    llm_with_tools = MagicMock()
+    llm_with_tools.stream.return_value = [AIMessageChunk(content="ok")]
+
+    chain = build_tool_calling_chain_streaming(llm_with_tools=llm_with_tools)
+    list(chain.stream({"user_request": "My name is Ada. Remember that."}))
+
+    sent_messages = llm_with_tools.stream.call_args[0][0]
+    assert sent_messages[0].__class__.__name__ == "SystemMessage"
+    assert "write_file" in sent_messages[0].content
+    assert "ALREADY remember" in sent_messages[0].content
 
 
 def test_build_tool_calling_chain_streaming_invoke_concatenates_full_answer():
