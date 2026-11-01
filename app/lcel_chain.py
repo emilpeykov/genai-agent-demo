@@ -295,14 +295,19 @@ def build_tool_calling_chain(
     if llm_with_tools is None:
         from langchain_ollama import ChatOllama
 
-        # "balanced" (llama3.1:8b), not "powerful" (devstral:24b): matches
-        # ReActAgent's own choice (proven to work well for tool-calling) and
-        # avoids a 14GB model competing for memory/GPU alongside whatever
-        # OTHER chain/tier is also in use (e.g. build_assistant_chain_streaming's
-        # "fast" tier) -- Ollama keeps multiple loaded models resident at once
-        # rather than swapping, so an unnecessarily huge default tier here
-        # was silently causing severe memory pressure and slowdowns.
-        resolved_model = model or MODEL_CATALOG["balanced"].ollama_model
+        # "powerful" (devstral:24b): llama3.1:8b ("balanced") was tried here
+        # first for its lighter memory footprint, but it turned out to be
+        # UNRELIABLE at structured tool-calling via LangChain's bind_tools()
+        # -- observed emitting malformed tool-call-shaped text directly as
+        # message content (e.g. '{"name": "None", "parameters": {}}')
+        # instead of a real tool call, non-deterministically, even for
+        # simple turns that needed no tool at all. devstral:24b is larger
+        # (14GB) and will compete for memory with other loaded models, but
+        # is noticeably more consistent here -- correctness beats raw
+        # memory footprint for this demo. If memory pressure becomes a
+        # problem again, consider running `ollama stop <model>` on unused
+        # models, or override via the ``model=`` parameter.
+        resolved_model = model or MODEL_CATALOG["powerful"].ollama_model
         llm_with_tools = ChatOllama(model=resolved_model, base_url=base_url).bind_tools(
             AVAILABLE_TOOLS
         )
@@ -396,10 +401,9 @@ def build_tool_calling_chain_streaming(
     if llm_with_tools is None:
         from langchain_ollama import ChatOllama
 
-        # Same "balanced" tier choice as build_tool_calling_chain above -- see
-        # the comment there for why (avoids an oversized model competing for
-        # memory alongside other tiers' models).
-        resolved_model = model or MODEL_CATALOG["balanced"].ollama_model
+        # Same "powerful" tier choice as build_tool_calling_chain above -- see
+        # the comment there for why (more reliable structured tool-calling).
+        resolved_model = model or MODEL_CATALOG["powerful"].ollama_model
         llm_with_tools = ChatOllama(model=resolved_model, base_url=base_url).bind_tools(
             AVAILABLE_TOOLS
         )
