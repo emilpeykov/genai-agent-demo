@@ -83,7 +83,15 @@ REACT_SYSTEM_TEMPLATE = PromptTemplate.from_template(
     "return the wrong file for short or vague queries. Reserve "
     "'codebase_search' for fuzzy/conceptual questions about the broader "
     "codebase where you do not already know which file has the answer "
-    "(e.g. 'how is conversation history handled?')."
+    "(e.g. 'how is conversation history handled?'). FILE EDITING: to create "
+    "a new file or replace one's entire contents, use 'write_file'. To "
+    "change just part of an existing file, prefer 'edit_file' (exact "
+    "find-and-replace) over 'write_file', since it cannot accidentally "
+    "discard unrelated content -- read the file first with 'read_file' so "
+    "'old_text' matches exactly. You also have 'file_search' (find files by "
+    "name pattern), 'copy_file', 'move_file', and 'file_delete' for other "
+    "file-system operations -- use whichever tool most directly matches "
+    "what the user asked for."
 )
 
 

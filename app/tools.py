@@ -1,6 +1,16 @@
-"""Tools exposed to the agent, defined with LangChain's ``@tool`` decorator.
+"""Tools exposed to the agent.
 
-These illustrate the "agent frameworks" requirement: the agent can decide,
+Where a maintained LangChain-integrated tool/toolkit already exists for a
+capability (Wikipedia lookup, file read/write/list), we use that directly
+(``langchain_community.tools``/``agent_toolkits``) instead of hand-rolling
+one. Where no such integration exists (arithmetic, an internal mock KB,
+shell execution, in-place text edits, system resource stats), we write a
+small function and expose it with LangChain's ``@tool`` decorator -- the
+same mechanism LangChain's own built-in tools use under the hood, so from
+the agent's point of view (and in ``AVAILABLE_TOOLS`` below) every tool here
+looks and behaves identically regardless of where it came from.
+
+This illustrates the "agent frameworks" requirement: the agent can decide,
 based on the user's request, whether it needs to call a deterministic tool
 (e.g. a calculator) instead of hallucinating an answer -- a core idea behind
 LangChain/LlamaIndex/AutoGen-style agents.
@@ -13,6 +23,8 @@ import subprocess
 from pathlib import Path
 
 import psutil
+from langchain_community.agent_toolkits import FileManagementToolkit
+from langchain_community.tools import WikipediaQueryRun
 from langchain_community.utilities import WikipediaAPIWrapper
 from langchain_core.tools import tool
 
@@ -71,12 +83,16 @@ def knowledge_base_lookup(topic: str) -> str:
 
 
 # Instead of hand-writing an HTTP client + response parser for an external
-# knowledge source, this reuses LangChain's PREBUILT ``WikipediaAPIWrapper``
-# (from langchain_community.utilities) -- the "use a predefined tool/library"
-# alternative to writing a custom web-search tool from scratch. LangChain
-# ships many of these ready-made integrations (see module docstring below for
-# more); this is a concrete example rather than just a description of one.
-_wikipedia = WikipediaAPIWrapper(top_k_results=1, doc_content_chars_max=1000)
+# knowledge source, this uses LangChain's PREBUILT ``WikipediaQueryRun`` tool
+# (from langchain_community.tools) -- a ready-made, agent-ready ``BaseTool``
+# built on top of ``WikipediaAPIWrapper`` -- rather than calling the API
+# wrapper by hand. It's still exposed to the agent through our own thin
+# @tool wrapper so that network/SSL/API errors degrade gracefully instead of
+# crashing the agent loop (``WikipediaQueryRun`` itself only swallows
+# ``ToolException``s, not arbitrary network errors).
+_wikipedia_tool = WikipediaQueryRun(
+    api_wrapper=WikipediaAPIWrapper(top_k_results=1, doc_content_chars_max=1000)
+)
 
 
 @tool
@@ -90,7 +106,7 @@ def wikipedia_search(query: str) -> str:
     almost anything with a Wikipedia article. Requires internet access.
     """
     try:
-        result = _wikipedia.run(query)
+        result = _wikipedia_tool.invoke({"query": query})
     except Exception as exc:  # network/SSL/API errors -- never crash the agent loop
         return f"Error searching Wikipedia for '{query}': {exc}"
     return result or f"No Wikipedia results found for '{query}'."
@@ -158,50 +174,24 @@ def run_shell_command(command: str) -> str:
     return output
 
 
-# These next two tools demonstrate the alternative to "wrap a shell command":
-# use a native Python library (pathlib, psutil) instead of subprocess at all.
-# No shlex parsing, no shell metacharacters to worry about, and the model
-# gets exact structured numbers instead of having to parse free-text output
-# or reach for a Unix pipe idiom (ls | wc -l) that this project doesn't
-# support. Any Python library can be turned into a tool this way: write a
-# plain function, decorate it with @tool, give it a clear docstring.
-
-DIRECTORY_LISTING_MAX_ENTRIES = 200
-
-
-@tool
-def list_directory(path: str = ".") -> str:
-    """List files and subdirectories directly under a given path, with a count.
-
-    Returns the total number of files, the total number of subdirectories,
-    and their names -- computed directly in Python (pathlib), not by running
-    'ls' and parsing its text. Use this whenever asked to count, list, or
-    check for the existence of files/folders -- it always gives an exact
-    count, so there is never a need to pipe output through 'wc' or 'grep'.
-
-    'path' defaults to the current directory ('.') if not given. Relative
-    paths are resolved from the server's working directory.
-    """
-    try:
-        target = Path(path).expanduser()
-        if not target.exists():
-            return f"Error: path '{path}' does not exist"
-        if not target.is_dir():
-            return f"Error: '{path}' is not a directory"
-        entries = sorted(target.iterdir(), key=lambda p: p.name)
-    except OSError as exc:
-        return f"Error: could not list '{path}' ({exc})"
-
-    files = [e.name for e in entries if e.is_file()]
-    dirs = [e.name for e in entries if e.is_dir()]
-    shown_files = files[:DIRECTORY_LISTING_MAX_ENTRIES]
-    shown_dirs = dirs[:DIRECTORY_LISTING_MAX_ENTRIES]
-    summary = (
-        f"{len(files)} file(s), {len(dirs)} subdirectory(ies) in '{path}'.\n"
-        f"Files: {', '.join(shown_files) if shown_files else '(none)'}\n"
-        f"Subdirectories: {', '.join(shown_dirs) if shown_dirs else '(none)'}"
-    )
-    return summary
+# Full file-system toolkit: use LangChain's PREBUILT ``FileManagementToolkit``
+# (langchain_community.agent_toolkits) instead of hand-rolling pathlib-based
+# tools. Leaving ``selected_tools`` unset exposes its ENTIRE family of
+# ready-made, agent-ready file-system tools -- read_file, write_file,
+# list_directory, file_search, copy_file, move_file, file_delete -- so the
+# model has the full range of file operations a real coding assistant needs,
+# not just a hand-picked subset. Same security-model note as
+# run_shell_command applies: ``root_dir=None`` means no path restriction,
+# which is appropriate for a local demo/learning sandbox only -- pass a real
+# ``root_dir`` to sandbox these to one directory in any less trusted setting.
+_file_tools = {t.name: t for t in FileManagementToolkit(root_dir=None).get_tools()}
+list_directory = _file_tools["list_directory"]
+read_file = _file_tools["read_file"]
+write_file = _file_tools["write_file"]
+file_search = _file_tools["file_search"]
+copy_file = _file_tools["copy_file"]
+move_file = _file_tools["move_file"]
+file_delete = _file_tools["file_delete"]
 
 
 @tool
@@ -224,32 +214,28 @@ def system_resources() -> str:
     )
 
 
-# Why this tool exists: 'codebase_search' does SEMANTIC (embedding similarity)
-# search -- great for fuzzy questions like "how is X implemented?", but
-# unreliable when the user names a SPECIFIC file (e.g. "check the README").
-# A vague/short query can embed closer to an unrelated chunk than to the
-# actual file being asked about (observed: a query literally containing the
-# word "readme" top-matched app/codebase_rag.py instead of README.md).
-# read_file sidesteps retrieval quality entirely for this common case: give
-# it an exact path, get back the exact, complete, ground-truth content.
-READ_FILE_MAX_CHARS = 8000
+# edit_file has no off-the-shelf LangChain equivalent (the built-in file
+# toolkit can read/write/move/copy/delete whole files but has no "replace
+# this exact snippet" tool), so it stays hand-written -- it gives the model
+# a far less error-prone way to change PART of a file than reconstructing
+# the whole content by hand via 'write_file'.
 
 
 @tool
-def read_file(path: str) -> str:
-    """Read and return the exact, full contents of a specific file by path.
+def edit_file(path: str, old_text: str, new_text: str) -> str:
+    """Replace an exact snippet of text within an existing file with new text.
 
-    Use this whenever the user names a SPECIFIC file (e.g. "check the
-    README", "what does app/agent.py do", "read config.py") -- this gives
-    you the exact real content, instead of 'codebase_search', which does
-    fuzzy semantic search and can match the wrong file/chunk for short or
-    oddly-phrased queries. Prefer 'read_file' over 'codebase_search' any
-    time you already know (or can guess) the file's path or name.
+    'old_text' must match EXACTLY ONE location in the file (including
+    whitespace/indentation) -- if it appears zero times or more than once,
+    nothing is changed and an error is returned explaining why, so you can
+    adjust 'old_text' (e.g. include a bit more surrounding context) and try
+    again. This is much safer than rewriting a whole file via 'write_file',
+    since it can't accidentally discard unrelated content you didn't mean to
+    touch.
 
-    'path' is resolved relative to the server's working directory (the
-    project root) if not absolute. Binary files and files over roughly
-    8000 characters are rejected/truncated to keep responses manageable --
-    use 'list_directory' first if you need to find the right path.
+    Use 'read_file' first to see the file's exact current content (including
+    whitespace) before choosing 'old_text'. 'path' is resolved relative to the
+    server's working directory (the project root) if not absolute.
     """
     try:
         target = Path(path).expanduser()
@@ -263,9 +249,21 @@ def read_file(path: str) -> str:
     except OSError as exc:
         return f"Error: could not read '{path}' ({exc})"
 
-    if len(content) > READ_FILE_MAX_CHARS:
-        content = content[:READ_FILE_MAX_CHARS] + "\n... [truncated]"
-    return content
+    occurrences = content.count(old_text)
+    if occurrences == 0:
+        return f"Error: old_text not found in '{path}' -- no changes made"
+    if occurrences > 1:
+        return (
+            f"Error: old_text matches {occurrences} locations in '{path}' -- "
+            "include more surrounding context to make it unique, no changes made"
+        )
+
+    try:
+        target.write_text(content.replace(old_text, new_text, 1), encoding="utf-8")
+    except OSError as exc:
+        return f"Error: could not write '{path}' ({exc})"
+
+    return f"Edited '{path}': replaced 1 occurrence."
 
 
 AVAILABLE_TOOLS = [
@@ -275,6 +273,12 @@ AVAILABLE_TOOLS = [
     run_shell_command,
     list_directory,
     read_file,
+    write_file,
+    edit_file,
+    file_search,
+    copy_file,
+    move_file,
+    file_delete,
     system_resources,
     rag_search,
     codebase_search,
