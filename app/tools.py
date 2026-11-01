@@ -16,6 +16,7 @@ import psutil
 from langchain_core.tools import tool
 
 from app.codebase_rag import codebase_search
+from app.postgres_rag import article_search
 from app.rag import rag_search
 from app.readme_rag import readme_search
 
@@ -250,4 +251,5 @@ AVAILABLE_TOOLS = [
     rag_search,
     codebase_search,
     readme_search,
+    article_search,
 ]

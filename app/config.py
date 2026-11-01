@@ -69,3 +69,9 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 # (local models via Ollama), or "openai" (real cloud API, needs OPENAI_API_KEY).
 LLM_BACKEND = os.getenv("LLM_BACKEND", "mock").lower()
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+
+# Optional: connection string for a Postgres instance with the pgvector
+# extension installed, e.g. "postgresql://user:pass@localhost:5432/mydb".
+# Only used by app.postgres_rag -- unset (None) means that tool will report
+# itself unavailable rather than failing the whole app at import time.
+POSTGRES_DSN = os.getenv("POSTGRES_DSN")
