@@ -40,10 +40,12 @@ from __future__ import annotations
 
 from datetime import date
 
+from langchain_core.chat_history import BaseChatMessageHistory, InMemoryChatMessageHistory
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.output_parsers import BaseOutputParser, StrOutputParser
 from langchain_core.prompts import BasePromptTemplate
 from langchain_core.runnables import Runnable, RunnableLambda
+from langchain_core.runnables.history import RunnableWithMessageHistory
 
 from app.config import MODEL_CATALOG, OLLAMA_BASE_URL, ModelTier
 from app.prompts import ASSISTANT_PERSONA_TEMPLATE, DEFAULT_COMPANY_NAME
@@ -51,6 +53,23 @@ from app.providers import LLMProvider, get_default_provider
 from app.tools import AVAILABLE_TOOLS
 
 _TOOLS_BY_NAME = {t.name: t for t in AVAILABLE_TOOLS}
+
+# Per-session chat history store, keyed by an arbitrary caller-supplied
+# ``session_id``. Uses LangChain's own PREBUILT ``InMemoryChatMessageHistory``
+# (langchain_core.chat_history) rather than hand-rolling a dict-of-lists
+# ourselves -- same "prefer the maintained library tool" principle used for
+# the file/Wikipedia tools in app.tools. This is process-memory only (lost on
+# restart, not shared across multiple server workers/processes) -- fine for a
+# local demo; a real deployment would back this with Redis/a database via a
+# custom ``BaseChatMessageHistory`` subclass instead.
+_SESSION_STORE: dict[str, InMemoryChatMessageHistory] = {}
+
+
+def get_session_history(session_id: str) -> BaseChatMessageHistory:
+    """Return (creating on first use) the message history for ``session_id``."""
+    if session_id not in _SESSION_STORE:
+        _SESSION_STORE[session_id] = InMemoryChatMessageHistory()
+    return _SESSION_STORE[session_id]
 
 
 def _prompt_value_to_text(prompt_value) -> str:
@@ -140,7 +159,11 @@ def build_assistant_chain(
 MAX_TOOL_ROUNDS = 3  # same spirit as ReActAgent.MAX_ITERATIONS -- a hard cap
 
 
-def _run_tool_calling_loop(llm_with_tools: Runnable, user_request: str) -> str:
+def _run_tool_calling_loop(
+    llm_with_tools: Runnable,
+    user_request: str,
+    chat_history: list[BaseMessage] | None = None,
+) -> str:
     """Drive a bounded tool-calling loop against an LLM already bound with
     tools (``llm_with_tools = some_chat_model.bind_tools(AVAILABLE_TOOLS)``).
 
@@ -153,8 +176,14 @@ def _run_tool_calling_loop(llm_with_tools: Runnable, user_request: str) -> str:
     as many times as needed. ``ReActAgent`` solves the identical problem by
     hand-rolling the same loop directly against Ollama's HTTP API instead of
     going through a LangChain chat-model Runnable.
+
+    ``chat_history`` (optional) is a list of prior turns' ``BaseMessage``s --
+    e.g. supplied by ``RunnableWithMessageHistory`` in
+    ``build_tool_calling_chain_with_memory`` -- prepended before the new
+    ``user_request`` so the model has real conversational memory. Omit it
+    (the default) for the original stateless, single-turn behavior.
     """
-    messages: list[BaseMessage] = [HumanMessage(content=user_request)]
+    messages: list[BaseMessage] = list(chat_history or []) + [HumanMessage(content=user_request)]
     last_ai_message: AIMessage | None = None
 
     for _ in range(MAX_TOOL_ROUNDS):
@@ -215,6 +244,39 @@ def build_tool_calling_chain(
         )
 
     def _invoke(inputs: dict) -> str:
-        return _run_tool_calling_loop(llm_with_tools, inputs["user_request"])
+        return _run_tool_calling_loop(
+            llm_with_tools, inputs["user_request"], inputs.get("chat_history")
+        )
 
     return RunnableLambda(_invoke)
+
+
+def build_tool_calling_chain_with_memory(
+    llm_with_tools: Runnable | None = None,
+    model: str | None = None,
+    base_url: str = OLLAMA_BASE_URL,
+) -> RunnableWithMessageHistory:
+    """Same tool-calling chain as ``build_tool_calling_chain``, but wrapped
+    with LangChain's PREBUILT session-memory machinery --
+    ``InMemoryChatMessageHistory`` + ``RunnableWithMessageHistory``
+    (``langchain_core.chat_history``/``langchain_core.runnables.history``) --
+    instead of requiring the caller to manually collect and resend prior
+    turns themselves (the pattern ``ReActAgent``/``/agent/react`` use via
+    their ``history`` parameter).
+
+    Call ``.invoke({"user_request": "..."}, config={"configurable": {"session_id": "..."}})``:
+    everything said in that ``session_id`` is automatically looked up before
+    the call and recorded again after it, so a second call with the SAME
+    ``session_id`` has real conversational memory -- no caller-managed
+    ``history`` list required. Different ``session_id``s are fully isolated
+    from one another.
+    """
+    base_chain = build_tool_calling_chain(
+        llm_with_tools=llm_with_tools, model=model, base_url=base_url
+    )
+    return RunnableWithMessageHistory(
+        base_chain,
+        get_session_history,
+        input_messages_key="user_request",
+        history_messages_key="chat_history",
+    )

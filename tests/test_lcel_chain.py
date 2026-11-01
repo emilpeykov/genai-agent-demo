@@ -1,9 +1,16 @@
 from unittest.mock import MagicMock
+from uuid import uuid4
 
 from langchain_core.messages import AIMessage
 from langchain_core.prompts import PromptTemplate
 
-from app.lcel_chain import build_assistant_chain, build_prompt_model_parser_chain, build_tool_calling_chain
+from app.lcel_chain import (
+    build_assistant_chain,
+    build_prompt_model_parser_chain,
+    build_tool_calling_chain,
+    build_tool_calling_chain_with_memory,
+    get_session_history,
+)
 from app.providers import LLMResponse
 
 
@@ -162,3 +169,52 @@ def test_build_tool_calling_chain_stops_after_max_rounds():
 
     assert result == "still thinking"
     assert llm_with_tools.invoke.call_count == 3  # MAX_TOOL_ROUNDS
+
+
+def test_get_session_history_returns_same_instance_for_same_session_id():
+    session_id = str(uuid4())
+
+    assert get_session_history(session_id) is get_session_history(session_id)
+
+
+def test_get_session_history_returns_different_instances_for_different_ids():
+    assert get_session_history(str(uuid4())) is not get_session_history(str(uuid4()))
+
+
+def test_build_tool_calling_chain_with_memory_remembers_prior_turns():
+    llm_with_tools = MagicMock()
+    llm_with_tools.invoke.return_value = AIMessage(content="ok", tool_calls=[])
+
+    chain = build_tool_calling_chain_with_memory(llm_with_tools=llm_with_tools)
+    config = {"configurable": {"session_id": str(uuid4())}}
+
+    chain.invoke({"user_request": "my name is Bob"}, config=config)
+    chain.invoke({"user_request": "what is my name?"}, config=config)
+
+    # The SECOND call's messages must include the FIRST turn's human message
+    # and the model's own first reply -- i.e. real memory, not a stateless
+    # single-turn call.
+    second_call_messages = llm_with_tools.invoke.call_args_list[1][0][0]
+    human_texts = [
+        m.content for m in second_call_messages if m.__class__.__name__ == "HumanMessage"
+    ]
+    assert human_texts == ["my name is Bob", "what is my name?"]
+
+
+def test_build_tool_calling_chain_with_memory_isolates_different_sessions():
+    llm_with_tools = MagicMock()
+    llm_with_tools.invoke.return_value = AIMessage(content="ok", tool_calls=[])
+
+    chain = build_tool_calling_chain_with_memory(llm_with_tools=llm_with_tools)
+    session_a = {"configurable": {"session_id": str(uuid4())}}
+    session_b = {"configurable": {"session_id": str(uuid4())}}
+
+    chain.invoke({"user_request": "secret for session A"}, config=session_a)
+    chain.invoke({"user_request": "what did I say before?"}, config=session_b)
+
+    # Session B's call must NOT see anything said in session A.
+    session_b_call_messages = llm_with_tools.invoke.call_args_list[1][0][0]
+    human_texts = [
+        m.content for m in session_b_call_messages if m.__class__.__name__ == "HumanMessage"
+    ]
+    assert human_texts == ["what did I say before?"]

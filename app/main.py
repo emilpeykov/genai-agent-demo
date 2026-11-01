@@ -10,7 +10,11 @@ from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
 from app.agent import Agent, AgentResult
-from app.lcel_chain import build_assistant_chain, build_tool_calling_chain
+from app.lcel_chain import (
+    build_assistant_chain,
+    build_tool_calling_chain,
+    build_tool_calling_chain_with_memory,
+)
 from app.react_agent import ReActAgent, ReActResult
 
 app = FastAPI(
@@ -31,6 +35,7 @@ _lcel_chain = build_assistant_chain()
 # running with a tool-calling-capable model to actually be usable, so it's
 # built lazily on first request to /chat/lcel/tools instead.
 _lcel_tool_chain = None
+_lcel_tool_chain_with_memory = None
 
 
 def _get_lcel_tool_chain():
@@ -38,6 +43,13 @@ def _get_lcel_tool_chain():
     if _lcel_tool_chain is None:
         _lcel_tool_chain = build_tool_calling_chain()
     return _lcel_tool_chain
+
+
+def _get_lcel_tool_chain_with_memory():
+    global _lcel_tool_chain_with_memory
+    if _lcel_tool_chain_with_memory is None:
+        _lcel_tool_chain_with_memory = build_tool_calling_chain_with_memory()
+    return _lcel_tool_chain_with_memory
 
 
 class ChatMessage(BaseModel):
@@ -53,6 +65,18 @@ class ChatRequest(BaseModel):
             "Prior turns of this conversation (role/content pairs, oldest first). "
             "Only used by /agent/react -- without it, each call is stateless and "
             "the model has no memory of anything said earlier."
+        ),
+    )
+    session_id: str = Field(
+        default="default",
+        description=(
+            "Only used by /chat/lcel/tools/memory. An arbitrary id identifying "
+            "this conversation -- the server remembers every turn sent under the "
+            "same session_id (via LangChain's InMemoryChatMessageHistory) and "
+            "automatically includes it on the next call with that same id, so "
+            "(unlike 'history' above) the caller does NOT need to resend prior "
+            "turns themselves. Use a different session_id per independent "
+            "conversation/user."
         ),
     )
 
@@ -133,6 +157,23 @@ def chat_lcel_tools(request: ChatRequest) -> LcelChatResponse:
     ``ReActAgent``'s hand-rolled HTTP loop against Ollama's API. Requires
     Ollama running locally with a tool-calling-capable model."""
     answer = _get_lcel_tool_chain().invoke({"user_request": request.prompt})
+    return LcelChatResponse(answer=answer)
+
+
+@app.post("/chat/lcel/tools/memory", response_model=LcelChatResponse)
+def chat_lcel_tools_memory(request: ChatRequest) -> LcelChatResponse:
+    """Same as /chat/lcel/tools, but with real conversational memory via
+    ``app.lcel_chain.build_tool_calling_chain_with_memory`` -- LangChain's
+    PREBUILT ``InMemoryChatMessageHistory`` + ``RunnableWithMessageHistory``.
+    Pass the SAME ``session_id`` across requests to continue a conversation;
+    unlike /agent/react's ``history`` field, you do NOT need to resend prior
+    turns yourself -- the server remembers them for you, keyed by
+    ``session_id``. Requires Ollama running locally with a tool-calling-
+    capable model."""
+    answer = _get_lcel_tool_chain_with_memory().invoke(
+        {"user_request": request.prompt},
+        config={"configurable": {"session_id": request.session_id}},
+    )
     return LcelChatResponse(answer=answer)
 
 

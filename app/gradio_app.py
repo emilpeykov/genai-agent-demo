@@ -10,10 +10,16 @@ exact same question.
 """
 from __future__ import annotations
 
+import uuid
+
 import gradio as gr
 
 from app.agent import Agent
-from app.lcel_chain import build_assistant_chain, build_tool_calling_chain
+from app.lcel_chain import (
+    build_assistant_chain,
+    build_tool_calling_chain,
+    build_tool_calling_chain_with_memory,
+)
 from app.react_agent import ReActAgent
 
 _rule_based_agent = Agent()
@@ -21,6 +27,7 @@ _react_agent = ReActAgent()
 _lcel_chain = build_assistant_chain()
 # Not built eagerly -- see app.main for why (requires Ollama to actually use).
 _lcel_tool_chain = None
+_lcel_tool_chain_with_memory = None
 
 
 def _get_lcel_tool_chain():
@@ -28,6 +35,13 @@ def _get_lcel_tool_chain():
     if _lcel_tool_chain is None:
         _lcel_tool_chain = build_tool_calling_chain()
     return _lcel_tool_chain
+
+
+def _get_lcel_tool_chain_with_memory():
+    global _lcel_tool_chain_with_memory
+    if _lcel_tool_chain_with_memory is None:
+        _lcel_tool_chain_with_memory = build_tool_calling_chain_with_memory()
+    return _lcel_tool_chain_with_memory
 
 # The separator our own replies use to append debug metadata (tool used,
 # cost, etc.) below the actual answer -- see the "meta" strings below. When
@@ -97,6 +111,18 @@ def _chat_lcel_tools(message: str, history: list) -> str:
     return _get_lcel_tool_chain().invoke({"user_request": message})
 
 
+def _chat_lcel_tools_memory(message: str, history: list, session_id: str) -> str:
+    # Like /chat/lcel/tools/memory -- real server-side memory via LangChain's
+    # InMemoryChatMessageHistory, keyed by this browser tab's own session_id
+    # (a gr.State value generated once when the tab first loads, see
+    # build_app() below), so Gradio's own client-side history re-send is NOT
+    # what's providing memory here -- the server remembers on its own.
+    return _get_lcel_tool_chain_with_memory().invoke(
+        {"user_request": message},
+        config={"configurable": {"session_id": session_id}},
+    )
+
+
 def build_app() -> gr.Blocks:
     with gr.Blocks(title="GenAI Agent Demo") as demo:
         gr.Markdown(
@@ -149,6 +175,27 @@ def build_app() -> gr.Blocks:
                 examples=[
                     "What is 23 times 17?",
                     "Check the README and tell me what this project does.",
+                ],
+            )
+        with gr.Tab("LCEL chain + tools + memory (/chat/lcel/tools/memory)"):
+            gr.Markdown(
+                "Same tool-calling LCEL chain, but wrapped with LangChain's "
+                "PREBUILT session memory -- `InMemoryChatMessageHistory` + "
+                "`RunnableWithMessageHistory` -- instead of this agent "
+                "relying on Gradio's own client-side history. Each browser "
+                "tab gets its own `session_id` (generated once on load), so "
+                "the SERVER remembers what was said earlier in `session_id`'s "
+                "conversation automatically -- try asking it your name, then "
+                "asking what your name is. See "
+                "`app.lcel_chain.build_tool_calling_chain_with_memory`."
+            )
+            session_id_state = gr.State(value=lambda: str(uuid.uuid4()))
+            gr.ChatInterface(
+                fn=_chat_lcel_tools_memory,
+                additional_inputs=[session_id_state],
+                examples=[
+                    "My name is Ada. Remember that.",
+                    "What is my name?",
                 ],
             )
     return demo
