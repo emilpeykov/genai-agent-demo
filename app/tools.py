@@ -15,6 +15,7 @@ from pathlib import Path
 import psutil
 from langchain_core.tools import tool
 
+from app.codebase_rag import codebase_search
 from app.rag import rag_search
 
 _ALLOWED_OPERATORS = {
@@ -201,4 +202,5 @@ AVAILABLE_TOOLS = [
     list_directory,
     system_resources,
     rag_search,
+    codebase_search,
 ]
