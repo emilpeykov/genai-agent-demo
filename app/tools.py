@@ -13,6 +13,7 @@ import subprocess
 from pathlib import Path
 
 import psutil
+from langchain_community.utilities import WikipediaAPIWrapper
 from langchain_core.tools import tool
 
 from app.codebase_rag import codebase_search
@@ -67,6 +68,32 @@ def knowledge_base_lookup(topic: str) -> str:
         "pricing": "Pricing tiers are Starter, Growth, and Enterprise, billed monthly.",
     }
     return mock_kb.get(topic.strip().lower(), f"No internal knowledge found for '{topic}'.")
+
+
+# Instead of hand-writing an HTTP client + response parser for an external
+# knowledge source, this reuses LangChain's PREBUILT ``WikipediaAPIWrapper``
+# (from langchain_community.utilities) -- the "use a predefined tool/library"
+# alternative to writing a custom web-search tool from scratch. LangChain
+# ships many of these ready-made integrations (see module docstring below for
+# more); this is a concrete example rather than just a description of one.
+_wikipedia = WikipediaAPIWrapper(top_k_results=1, doc_content_chars_max=1000)
+
+
+@tool
+def wikipedia_search(query: str) -> str:
+    """Look up a GENERAL-knowledge topic (people, places, companies, concepts,
+    historical events) on Wikipedia and return a short summary.
+
+    Use this for external, real-world knowledge questions -- unlike
+    'knowledge_base_lookup', which only knows a handful of OUR OWN mock
+    internal company facts (refund policy, SLA, pricing), this can answer
+    almost anything with a Wikipedia article. Requires internet access.
+    """
+    try:
+        result = _wikipedia.run(query)
+    except Exception as exc:  # network/SSL/API errors -- never crash the agent loop
+        return f"Error searching Wikipedia for '{query}': {exc}"
+    return result or f"No Wikipedia results found for '{query}'."
 
 
 # NOTE ON SECURITY MODEL (read this before reusing this tool anywhere else):
@@ -244,6 +271,7 @@ def read_file(path: str) -> str:
 AVAILABLE_TOOLS = [
     calculator,
     knowledge_base_lookup,
+    wikipedia_search,
     run_shell_command,
     list_directory,
     read_file,

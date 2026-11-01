@@ -1,4 +1,11 @@
-from app.tools import READ_FILE_MAX_CHARS, calculator, knowledge_base_lookup, read_file, run_shell_command
+from app.tools import (
+    READ_FILE_MAX_CHARS,
+    calculator,
+    knowledge_base_lookup,
+    read_file,
+    run_shell_command,
+    wikipedia_search,
+)
 
 
 def test_calculator_tool_basic_arithmetic():
@@ -105,3 +112,46 @@ def test_read_file_rejects_binary_content(tmp_path):
     result = read_file.invoke({"path": str(file_path)})
 
     assert result.startswith("Error:")
+
+
+def test_wikipedia_search_returns_summary_on_success(monkeypatch):
+    import app.tools as tools_module
+
+    class _FakeWikipedia:
+        def run(self, query: str) -> str:
+            return f"Summary about {query}"
+
+    monkeypatch.setattr(tools_module, "_wikipedia", _FakeWikipedia())
+
+    result = wikipedia_search.invoke({"query": "Ada Lovelace"})
+
+    assert result == "Summary about Ada Lovelace"
+
+
+def test_wikipedia_search_handles_no_results(monkeypatch):
+    import app.tools as tools_module
+
+    class _FakeWikipedia:
+        def run(self, query: str) -> str:
+            return ""
+
+    monkeypatch.setattr(tools_module, "_wikipedia", _FakeWikipedia())
+
+    result = wikipedia_search.invoke({"query": "asdkjfhaslkdjfh"})
+
+    assert "No Wikipedia results found" in result
+
+
+def test_wikipedia_search_handles_network_errors_gracefully(monkeypatch):
+    import app.tools as tools_module
+
+    class _FakeWikipedia:
+        def run(self, query: str) -> str:
+            raise ConnectionError("no network")
+
+    monkeypatch.setattr(tools_module, "_wikipedia", _FakeWikipedia())
+
+    result = wikipedia_search.invoke({"query": "anything"})
+
+    assert result.startswith("Error searching Wikipedia")
+    assert "no network" in result
