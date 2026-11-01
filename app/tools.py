@@ -195,11 +195,56 @@ def system_resources() -> str:
     )
 
 
+# Why this tool exists: 'codebase_search' does SEMANTIC (embedding similarity)
+# search -- great for fuzzy questions like "how is X implemented?", but
+# unreliable when the user names a SPECIFIC file (e.g. "check the README").
+# A vague/short query can embed closer to an unrelated chunk than to the
+# actual file being asked about (observed: a query literally containing the
+# word "readme" top-matched app/codebase_rag.py instead of README.md).
+# read_file sidesteps retrieval quality entirely for this common case: give
+# it an exact path, get back the exact, complete, ground-truth content.
+READ_FILE_MAX_CHARS = 8000
+
+
+@tool
+def read_file(path: str) -> str:
+    """Read and return the exact, full contents of a specific file by path.
+
+    Use this whenever the user names a SPECIFIC file (e.g. "check the
+    README", "what does app/agent.py do", "read config.py") -- this gives
+    you the exact real content, instead of 'codebase_search', which does
+    fuzzy semantic search and can match the wrong file/chunk for short or
+    oddly-phrased queries. Prefer 'read_file' over 'codebase_search' any
+    time you already know (or can guess) the file's path or name.
+
+    'path' is resolved relative to the server's working directory (the
+    project root) if not absolute. Binary files and files over roughly
+    8000 characters are rejected/truncated to keep responses manageable --
+    use 'list_directory' first if you need to find the right path.
+    """
+    try:
+        target = Path(path).expanduser()
+        if not target.exists():
+            return f"Error: path '{path}' does not exist"
+        if not target.is_file():
+            return f"Error: '{path}' is not a file"
+        content = target.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return f"Error: '{path}' is not a readable text file (binary content)"
+    except OSError as exc:
+        return f"Error: could not read '{path}' ({exc})"
+
+    if len(content) > READ_FILE_MAX_CHARS:
+        content = content[:READ_FILE_MAX_CHARS] + "\n... [truncated]"
+    return content
+
+
 AVAILABLE_TOOLS = [
     calculator,
     knowledge_base_lookup,
     run_shell_command,
     list_directory,
+    read_file,
     system_resources,
     rag_search,
     codebase_search,

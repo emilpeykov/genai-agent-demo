@@ -41,3 +41,15 @@ def test_render_react_system_prompt_reflects_the_real_tool_registry():
 
     for tool in AVAILABLE_TOOLS:
         assert tool.name in rendered
+
+
+def test_render_react_system_prompt_tells_model_to_prefer_read_file_for_named_files():
+    # Regression test: a query like "check the README" was observed to route
+    # through codebase_search's fuzzy semantic matching and confidently
+    # return the WRONG file (app/codebase_rag.py instead of README.md). The
+    # prompt must steer the model to use read_file for specifically-named
+    # files instead.
+    rendered = render_react_system_prompt(["read_file", "codebase_search"])
+
+    assert "read_file" in rendered
+    assert "specific file" in rendered.lower() or "named" in rendered.lower()

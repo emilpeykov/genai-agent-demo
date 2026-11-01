@@ -1,4 +1,4 @@
-from app.tools import calculator, knowledge_base_lookup, run_shell_command
+from app.tools import READ_FILE_MAX_CHARS, calculator, knowledge_base_lookup, read_file, run_shell_command
 
 
 def test_calculator_tool_basic_arithmetic():
@@ -67,3 +67,41 @@ def test_run_shell_command_docstring_mentions_full_freedom():
     docstring = run_shell_command.description
     assert "pipes" in docstring.lower()
     assert "no allowlist" in docstring.lower() or "no restrictions" in docstring.lower()
+
+
+def test_read_file_returns_exact_file_content(tmp_path):
+    file_path = tmp_path / "README.md"
+    file_path.write_text("# My Project\n\nThis project does X.\n")
+
+    result = read_file.invoke({"path": str(file_path)})
+
+    assert result == "# My Project\n\nThis project does X.\n"
+
+
+def test_read_file_rejects_missing_path():
+    result = read_file.invoke({"path": "/path/does/not/exist.md"})
+    assert result == "Error: path '/path/does/not/exist.md' does not exist"
+
+
+def test_read_file_rejects_a_directory(tmp_path):
+    result = read_file.invoke({"path": str(tmp_path)})
+    assert "is not a file" in result
+
+
+def test_read_file_truncates_very_long_files(tmp_path):
+    file_path = tmp_path / "big.txt"
+    file_path.write_text("x" * (READ_FILE_MAX_CHARS + 500))
+
+    result = read_file.invoke({"path": str(file_path)})
+
+    assert result.endswith("... [truncated]")
+    assert len(result) <= READ_FILE_MAX_CHARS + len("\n... [truncated]")
+
+
+def test_read_file_rejects_binary_content(tmp_path):
+    file_path = tmp_path / "image.png"
+    file_path.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x01\x02")
+
+    result = read_file.invoke({"path": str(file_path)})
+
+    assert result.startswith("Error:")
