@@ -88,12 +88,102 @@ def _get_connection():
 def ensure_schema() -> None:
     """Create the pgvector extension, table, and ANN index if missing.
 
+    Use this ONLY if you're starting from scratch (no existing articles
+    table yet). If you already have a Postgres table full of articles, use
+    ``add_embedding_column`` + ``backfill_embeddings`` instead -- they adapt
+    to YOUR existing table/column names rather than creating a new one.
+
     Idempotent (everything is ``IF NOT EXISTS``) -- safe to call repeatedly,
     but intended to run once during setup/deployment, not per-request.
     """
     with _get_connection() as conn, conn.cursor() as cur:
         cur.execute(ARTICLES_TABLE_SCHEMA)
         conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Migrating an EXISTING table into RAG (no new database, no data movement).
+#
+# If you already have a Postgres database with an articles table, you do NOT
+# need to create a new database or copy your data anywhere. You only need
+# to: (1) turn on the pgvector extension, (2) add one new nullable column to
+# your existing table to hold each row's embedding, and (3) run a one-time
+# backfill to compute and fill in that column for your existing rows. Your
+# original columns, rows, and ids are completely untouched.
+#
+# NOTE: ``table_name``/``id_column``/``content_column``/``embedding_column``
+# are interpolated directly into SQL below (psycopg's ``%s`` placeholders
+# can only parameterize VALUES, not identifiers like table/column names).
+# These must come from your own trusted config -- never from end-user input.
+# ---------------------------------------------------------------------------
+
+
+def add_embedding_column(
+    table_name: str = "articles",
+    embedding_column: str = "embedding",
+    embedding_dimensions: int = 768,
+) -> None:
+    """Enable pgvector and add an embedding column to an EXISTING table.
+
+    Safe to call repeatedly. Does not touch any of your existing columns or
+    rows -- it only adds one new, initially-NULL column (plus an ANN index)
+    alongside what's already there.
+    """
+    with _get_connection() as conn, conn.cursor() as cur:
+        cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+        cur.execute(
+            f"ALTER TABLE {table_name} "  # noqa: S608 - identifiers, not user input; see module note
+            f"ADD COLUMN IF NOT EXISTS {embedding_column} vector({embedding_dimensions});"
+        )
+        cur.execute(
+            f"CREATE INDEX IF NOT EXISTS {table_name}_{embedding_column}_idx "
+            f"ON {table_name} USING ivfflat ({embedding_column} vector_l2_ops) WITH (lists = 100);"
+        )
+        conn.commit()
+
+
+def backfill_embeddings(
+    table_name: str = "articles",
+    id_column: str = "id",
+    content_column: str = "content",
+    embedding_column: str = "embedding",
+    batch_size: int = 50,
+    base_url: str = OLLAMA_BASE_URL,
+) -> int:
+    """Embed and fill in ``embedding_column`` for existing rows that don't
+    have one yet -- the one-time (or periodic) step that actually brings
+    your pre-existing articles into RAG, without copying them to a new
+    table or database.
+
+    Only rows where ``embedding_column IS NULL`` are processed, so this is
+    safe to re-run: interrupt it anytime and rerun later to pick up where it
+    left off, or schedule it (e.g. as a cron job / nightly task) to embed
+    newly-inserted articles going forward.
+
+    Returns the number of rows embedded.
+    """
+    total = 0
+    with _get_connection() as conn:
+        while True:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT {id_column}, {content_column} FROM {table_name} "
+                    f"WHERE {embedding_column} IS NULL LIMIT %s",
+                    (batch_size,),
+                )
+                rows = cur.fetchall()
+            if not rows:
+                break
+            for row_id, content in rows:
+                embedding = _embed(content, base_url)
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"UPDATE {table_name} SET {embedding_column} = %s WHERE {id_column} = %s",
+                        (embedding, row_id),
+                    )
+                conn.commit()
+                total += 1
+    return total
 
 
 def upsert_article(article_id: int, title: str, content: str, base_url: str = OLLAMA_BASE_URL) -> None:
