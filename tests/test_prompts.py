@@ -47,9 +47,8 @@ def test_render_react_system_prompt_tells_model_to_prefer_read_file_for_named_fi
     # Regression test: a query like "check the README" was observed to route
     # through codebase_search's fuzzy semantic matching and confidently
     # return the WRONG file (app/codebase_rag.py instead of README.md). The
-    # prompt must steer the model to use read_file for specifically-named
-    # files instead.
-    rendered = render_react_system_prompt(["read_file", "codebase_search"])
+    # prompt must steer the model to use read_file/readme_search instead.
+    rendered = render_react_system_prompt(["read_file", "readme_search", "codebase_search"])
 
     assert "read_file" in rendered
-    assert "specific file" in rendered.lower() or "named" in rendered.lower()
+    assert "readme_search" in rendered

@@ -17,6 +17,7 @@ from langchain_core.tools import tool
 
 from app.codebase_rag import codebase_search
 from app.rag import rag_search
+from app.readme_rag import readme_search
 
 _ALLOWED_OPERATORS = {
     ast.Add: op.add,
@@ -248,4 +249,5 @@ AVAILABLE_TOOLS = [
     system_resources,
     rag_search,
     codebase_search,
+    readme_search,
 ]

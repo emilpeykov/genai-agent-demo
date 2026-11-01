@@ -74,13 +74,16 @@ REACT_SYSTEM_TEMPLATE = PromptTemplate.from_template(
     "tool(s) the user (or you) could call instead of calling them yourself. "
     "A description of your plan is never an acceptable substitute for "
     "actually executing it. FILE TOOL CHOICE: when the user names a "
-    "SPECIFIC file (e.g. 'the README', 'app/agent.py', 'the config file'), "
-    "use 'read_file' with that exact path to get its real, exact content -- "
-    "do NOT use 'codebase_search' for this, since that tool does fuzzy "
-    "semantic search and can confidently return the WRONG file for short or "
-    "vague queries. Reserve 'codebase_search' for fuzzy/conceptual questions "
-    "where you do not already know which file has the answer (e.g. 'how is "
-    "conversation history handled?')."
+    "SPECIFIC file (e.g. 'app/agent.py', 'the config file'), use 'read_file' "
+    "with that exact path to get its real, exact content. When asked about "
+    "the project's README specifically (what it does, how to run it, its "
+    "architecture), use 'readme_search' -- a dedicated index over just that "
+    "file. Do NOT use 'codebase_search' for either of these cases, since it "
+    "does fuzzy semantic search across the WHOLE repo and can confidently "
+    "return the wrong file for short or vague queries. Reserve "
+    "'codebase_search' for fuzzy/conceptual questions about the broader "
+    "codebase where you do not already know which file has the answer "
+    "(e.g. 'how is conversation history handled?')."
 )
 
 
