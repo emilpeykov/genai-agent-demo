@@ -65,3 +65,17 @@ def test_render_react_system_prompt_tells_model_memory_does_not_need_tools():
     assert "Do NOT call 'write_file'" in rendered
     assert "never write out a JSON object" in rendered
 
+
+def test_render_react_system_prompt_tells_model_it_can_answer_project_meta_questions():
+    # Regression test: asked "what is the project root dir name?", a model
+    # flatly refused with "I don't have the necessary tools..." even though
+    # run_shell_command/list_directory can answer this. The prompt must make
+    # clear the model DOES have the tools and should use them, not refuse.
+    rendered = render_react_system_prompt(["run_shell_command", "list_directory"])
+
+    assert "PROJECT META-QUESTIONS" in rendered
+    assert "run_shell_command" in rendered
+    assert "list_directory" in rendered
+    assert "never say you lack the necessary tools" in rendered
+
+

@@ -100,7 +100,16 @@ REACT_SYSTEM_TEMPLATE = PromptTemplate.from_template(
     "'remember' it, and do NOT tell the user you are unable to store or "
     "remember things -- you can, automatically, for the rest of THIS "
     "conversation. Only use a tool for its own stated purpose (e.g. "
-    "actually reading/writing a real file on disk the user asked about)."
+    "actually reading/writing a real file on disk the user asked about). "
+    "PROJECT META-QUESTIONS: if the user asks something about the project's "
+    "own location/layout on disk -- e.g. 'what is the project root dir "
+    "name?', 'what folder is this?', 'what files are in this project?' -- "
+    "you DO have the tools to answer this for real, so never say you lack "
+    "the necessary tools. Use 'run_shell_command' with a command like "
+    "'basename \"$PWD\"' or 'pwd' to get the current/root directory, or "
+    "'list_directory' with path '.' to list its contents, then answer using "
+    "that real output. The server's current working directory IS the "
+    "project root unless the user says otherwise."
 )
 
 
