@@ -255,9 +255,15 @@ def build_app() -> gr.Blocks:
             gr.ChatInterface(
                 fn=_chat_lcel_tools_memory,
                 additional_inputs=[session_id_state],
+                # When `additional_inputs` is set, Gradio requires `examples`
+                # to be a list of ROWS (one list per example), not a flat list
+                # of strings -- each row is [message, *extra_input_values].
+                # `session_id_state` is a hidden gr.State (not a visible
+                # input), so its example value is never actually shown/used;
+                # None is just a placeholder to satisfy the row shape.
                 examples=[
-                    "My name is Ada. Remember that.",
-                    "What is my name?",
+                    ["My name is Ada. Remember that.", None],
+                    ["What is my name?", None],
                 ],
             )
     return demo
