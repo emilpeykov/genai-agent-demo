@@ -269,7 +269,8 @@ def build_tool_calling_chain(
 
     Requires Ollama running locally with a tool-calling-capable model (see
     ``ReActAgent``, which uses the same tools against the same backend via a
-    hand-rolled HTTP loop instead of this LangChain-native path).
+    hand-rolled HTTP loop instead of this LangChain-native path, and defaults
+    to the SAME ``"balanced"`` tier model for the same reason -- see below).
 
     Call ``.invoke({"user_request": "..."})``. Pass a pre-built
     ``llm_with_tools`` Runnable (e.g. a mock, for tests) to avoid constructing
@@ -278,7 +279,14 @@ def build_tool_calling_chain(
     if llm_with_tools is None:
         from langchain_ollama import ChatOllama
 
-        resolved_model = model or MODEL_CATALOG["powerful"].ollama_model
+        # "balanced" (llama3.1:8b), not "powerful" (devstral:24b): matches
+        # ReActAgent's own choice (proven to work well for tool-calling) and
+        # avoids a 14GB model competing for memory/GPU alongside whatever
+        # OTHER chain/tier is also in use (e.g. build_assistant_chain_streaming's
+        # "fast" tier) -- Ollama keeps multiple loaded models resident at once
+        # rather than swapping, so an unnecessarily huge default tier here
+        # was silently causing severe memory pressure and slowdowns.
+        resolved_model = model or MODEL_CATALOG["balanced"].ollama_model
         llm_with_tools = ChatOllama(model=resolved_model, base_url=base_url).bind_tools(
             AVAILABLE_TOOLS
         )
@@ -368,7 +376,10 @@ def build_tool_calling_chain_streaming(
     if llm_with_tools is None:
         from langchain_ollama import ChatOllama
 
-        resolved_model = model or MODEL_CATALOG["powerful"].ollama_model
+        # Same "balanced" tier choice as build_tool_calling_chain above -- see
+        # the comment there for why (avoids an oversized model competing for
+        # memory alongside other tiers' models).
+        resolved_model = model or MODEL_CATALOG["balanced"].ollama_model
         llm_with_tools = ChatOllama(model=resolved_model, base_url=base_url).bind_tools(
             AVAILABLE_TOOLS
         )
