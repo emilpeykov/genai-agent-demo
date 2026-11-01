@@ -20,6 +20,7 @@ from app.lcel_chain import (
     build_assistant_chain_streaming,
     build_tool_calling_chain,
     build_tool_calling_chain_streaming,
+    build_tool_calling_chain_streaming_with_memory,
     build_tool_calling_chain_with_memory,
 )
 from app.react_agent import ReActAgent
@@ -32,6 +33,7 @@ _lcel_chain_streaming = build_assistant_chain_streaming()
 _lcel_tool_chain = None
 _lcel_tool_chain_with_memory = None
 _lcel_tool_chain_streaming = None
+_lcel_tool_chain_streaming_with_memory = None
 
 
 def _get_lcel_tool_chain():
@@ -53,6 +55,13 @@ def _get_lcel_tool_chain_streaming():
     if _lcel_tool_chain_streaming is None:
         _lcel_tool_chain_streaming = build_tool_calling_chain_streaming()
     return _lcel_tool_chain_streaming
+
+
+def _get_lcel_tool_chain_streaming_with_memory():
+    global _lcel_tool_chain_streaming_with_memory
+    if _lcel_tool_chain_streaming_with_memory is None:
+        _lcel_tool_chain_streaming_with_memory = build_tool_calling_chain_streaming_with_memory()
+    return _lcel_tool_chain_streaming_with_memory
 
 # The separator our own replies use to append debug metadata (tool used,
 # cost, etc.) below the actual answer -- see the "meta" strings below. When
@@ -151,6 +160,20 @@ def _chat_lcel_tools_stream(message: str, history: list):
     # Streaming version of _chat_lcel_tools. Requires Ollama running locally.
     partial = ""
     for chunk in _get_lcel_tool_chain_streaming().stream({"user_request": message}):
+        partial += chunk
+        yield partial
+
+
+def _chat_lcel_tools_memory_stream(message: str, history: list, session_id: str):
+    # Combines _chat_lcel_tools_stream's incremental typing with
+    # _chat_lcel_tools_memory's server-side session memory -- like
+    # /chat/lcel/tools/memory/stream. Same session_id/gr.State pattern as
+    # the memory-only tab (see build_app() below).
+    partial = ""
+    for chunk in _get_lcel_tool_chain_streaming_with_memory().stream(
+        {"user_request": message},
+        config={"configurable": {"session_id": session_id}},
+    ):
         partial += chunk
         yield partial
 
@@ -261,6 +284,25 @@ def build_app() -> gr.Blocks:
                 # `session_id_state` is a hidden gr.State (not a visible
                 # input), so its example value is never actually shown/used;
                 # None is just a placeholder to satisfy the row shape.
+                examples=[
+                    ["My name is Ada. Remember that.", None],
+                    ["What is my name?", None],
+                ],
+            )
+        with gr.Tab(
+            "LCEL chain + tools + memory + streaming (/chat/lcel/tools/memory/stream)"
+        ):
+            gr.Markdown(
+                "Everything combined: LangChain's native `bind_tools()` tool "
+                "use, PREBUILT session memory (`InMemoryChatMessageHistory` + "
+                "`RunnableWithMessageHistory`), AND token-by-token streaming, "
+                "all on the same chain. See "
+                "`app.lcel_chain.build_tool_calling_chain_streaming_with_memory`."
+            )
+            streaming_memory_session_id_state = gr.State(value=lambda: str(uuid.uuid4()))
+            gr.ChatInterface(
+                fn=_chat_lcel_tools_memory_stream,
+                additional_inputs=[streaming_memory_session_id_state],
                 examples=[
                     ["My name is Ada. Remember that.", None],
                     ["What is my name?", None],
