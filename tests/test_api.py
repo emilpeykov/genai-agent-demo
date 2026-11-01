@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+import app.main as main_module
 from app.main import app
 
 client = TestClient(app)
@@ -38,3 +39,19 @@ def test_chat_lcel_endpoint_returns_answer():
     body = response.json()
     assert isinstance(body["answer"], str)
     assert body["answer"]
+
+
+def test_chat_lcel_tools_endpoint_returns_answer(monkeypatch):
+    # Avoid requiring a real Ollama server in CI -- inject a fake chain with
+    # the same Runnable interface the real one would have.
+    class _FakeChain:
+        def invoke(self, inputs: dict) -> str:
+            return f"fake tool-using answer for: {inputs['user_request']}"
+
+    monkeypatch.setattr(main_module, "_lcel_tool_chain", _FakeChain())
+
+    response = client.post("/chat/lcel/tools", json={"prompt": "What is 2 + 2?"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["answer"] == "fake tool-using answer for: What is 2 + 2?"

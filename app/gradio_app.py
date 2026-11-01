@@ -13,12 +13,21 @@ from __future__ import annotations
 import gradio as gr
 
 from app.agent import Agent
-from app.lcel_chain import build_assistant_chain
+from app.lcel_chain import build_assistant_chain, build_tool_calling_chain
 from app.react_agent import ReActAgent
 
 _rule_based_agent = Agent()
 _react_agent = ReActAgent()
 _lcel_chain = build_assistant_chain()
+# Not built eagerly -- see app.main for why (requires Ollama to actually use).
+_lcel_tool_chain = None
+
+
+def _get_lcel_tool_chain():
+    global _lcel_tool_chain
+    if _lcel_tool_chain is None:
+        _lcel_tool_chain = build_tool_calling_chain()
+    return _lcel_tool_chain
 
 # The separator our own replies use to append debug metadata (tool used,
 # cost, etc.) below the actual answer -- see the "meta" strings below. When
@@ -83,6 +92,11 @@ def _chat_lcel(message: str, history: list) -> str:
     return _lcel_chain.invoke({"user_request": message})
 
 
+def _chat_lcel_tools(message: str, history: list) -> str:
+    # Stateless, like /chat/lcel/tools. Requires Ollama running locally.
+    return _get_lcel_tool_chain().invoke({"user_request": message})
+
+
 def build_app() -> gr.Blocks:
     with gr.Blocks(title="GenAI Agent Demo") as demo:
         gr.Markdown(
@@ -120,6 +134,21 @@ def build_app() -> gr.Blocks:
                 examples=[
                     "What is the refund policy?",
                     "Tell me a fun fact.",
+                ],
+            )
+        with gr.Tab("LCEL chain + tools (/chat/lcel/tools)"):
+            gr.Markdown(
+                "LCEL chain using LangChain's native `bind_tools()` -- the "
+                "same tools as the ReAct agent, but composed as a real LCEL "
+                "`Runnable` instead of a hand-rolled HTTP loop. Requires "
+                "Ollama running locally. See "
+                "`app.lcel_chain.build_tool_calling_chain`."
+            )
+            gr.ChatInterface(
+                fn=_chat_lcel_tools,
+                examples=[
+                    "What is 23 times 17?",
+                    "Check the README and tell me what this project does.",
                 ],
             )
     return demo

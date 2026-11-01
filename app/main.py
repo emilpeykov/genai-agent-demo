@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
 from app.agent import Agent, AgentResult
-from app.lcel_chain import build_assistant_chain
+from app.lcel_chain import build_assistant_chain, build_tool_calling_chain
 from app.react_agent import ReActAgent, ReActResult
 
 app = FastAPI(
@@ -27,6 +27,17 @@ _react_agent = ReActAgent()
 # Built once at import time -- building it just composes Runnables (cheap,
 # no network call), so there's no need to rebuild it per-request.
 _lcel_chain = build_assistant_chain()
+# NOT built eagerly -- constructing it is cheap, but it requires Ollama
+# running with a tool-calling-capable model to actually be usable, so it's
+# built lazily on first request to /chat/lcel/tools instead.
+_lcel_tool_chain = None
+
+
+def _get_lcel_tool_chain():
+    global _lcel_tool_chain
+    if _lcel_tool_chain is None:
+        _lcel_tool_chain = build_tool_calling_chain()
+    return _lcel_tool_chain
 
 
 class ChatMessage(BaseModel):
@@ -111,6 +122,17 @@ def chat_lcel(request: ChatRequest) -> LcelChatResponse:
     the parsed text answer, to demonstrate calling an LCEL ``Runnable``
     end-to-end."""
     answer = _lcel_chain.invoke({"user_request": request.prompt})
+    return LcelChatResponse(answer=answer)
+
+
+@app.post("/chat/lcel/tools", response_model=LcelChatResponse)
+def chat_lcel_tools(request: ChatRequest) -> LcelChatResponse:
+    """Same idea as /agent/react (LLM-driven tool use), but built as a real
+    LCEL chain via ``app.lcel_chain.build_tool_calling_chain`` --
+    ``some_chat_model.bind_tools(AVAILABLE_TOOLS)`` -- instead of
+    ``ReActAgent``'s hand-rolled HTTP loop against Ollama's API. Requires
+    Ollama running locally with a tool-calling-capable model."""
+    answer = _get_lcel_tool_chain().invoke({"user_request": request.prompt})
     return LcelChatResponse(answer=answer)
 
 
