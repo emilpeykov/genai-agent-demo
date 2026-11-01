@@ -95,3 +95,56 @@ def test_chat_lcel_tools_memory_endpoint_defaults_session_id(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["answer"] == "ok"
+
+
+def test_chat_lcel_stream_endpoint_streams_chunks(monkeypatch):
+    class _FakeStreamingChain:
+        def stream(self, inputs: dict):
+            yield f"Hello, {inputs['user_request']}"
+            yield "!"
+
+    monkeypatch.setattr(
+        main_module, "build_assistant_chain_streaming", lambda: _FakeStreamingChain()
+    )
+
+    response = client.post("/chat/lcel/stream", json={"prompt": "world"})
+
+    assert response.status_code == 200
+    assert response.text == "Hello, world!"
+
+
+def test_chat_lcel_tools_stream_endpoint_streams_chunks(monkeypatch):
+    class _FakeStreamingChain:
+        def stream(self, inputs: dict):
+            yield "fake "
+            yield f"streamed answer for: {inputs['user_request']}"
+
+    monkeypatch.setattr(main_module, "_lcel_tool_chain_streaming", _FakeStreamingChain())
+
+    response = client.post("/chat/lcel/tools/stream", json={"prompt": "What is 2 + 2?"})
+
+    assert response.status_code == 200
+    assert response.text == "fake streamed answer for: What is 2 + 2?"
+
+
+def test_chat_lcel_tools_memory_stream_endpoint_passes_through_session_id(monkeypatch):
+    class _FakeStreamingMemoryChain:
+        def __init__(self):
+            self.calls: list[tuple[dict, dict]] = []
+
+        def stream(self, inputs: dict, config: dict):
+            self.calls.append((inputs, config))
+            yield f"fake memory stream for: {inputs['user_request']}"
+
+    fake_chain = _FakeStreamingMemoryChain()
+    monkeypatch.setattr(main_module, "_lcel_tool_chain_streaming_with_memory", fake_chain)
+
+    response = client.post(
+        "/chat/lcel/tools/memory/stream",
+        json={"prompt": "My name is Ada.", "session_id": "test-session-xyz"},
+    )
+
+    assert response.status_code == 200
+    assert response.text == "fake memory stream for: My name is Ada."
+    assert fake_chain.calls[0][1] == {"configurable": {"session_id": "test-session-xyz"}}
+

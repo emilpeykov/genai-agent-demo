@@ -38,13 +38,14 @@ limitation of LCEL itself.
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import date
 
 from langchain_core.chat_history import BaseChatMessageHistory, InMemoryChatMessageHistory
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.output_parsers import BaseOutputParser, StrOutputParser
 from langchain_core.prompts import BasePromptTemplate
-from langchain_core.runnables import Runnable, RunnableLambda
+from langchain_core.runnables import Runnable, RunnableGenerator, RunnableLambda
 from langchain_core.runnables.history import RunnableWithMessageHistory
 
 from app.config import MODEL_CATALOG, OLLAMA_BASE_URL, ModelTier
@@ -156,6 +157,45 @@ def build_assistant_chain(
     return build_prompt_model_parser_chain(partial_prompt, provider=provider, tier=tier)
 
 
+def build_assistant_chain_streaming(
+    model: str | None = None,
+    base_url: str = OLLAMA_BASE_URL,
+    tier: ModelTier = "fast",
+) -> Runnable:
+    """Same prompt/persona as ``build_assistant_chain``, but built as
+    ``prompt | ChatOllama | StrOutputParser()`` -- a chain of REAL LangChain
+    ``Runnable``s -- instead of ``prompt | RunnableLambda(provider.generate)``.
+
+    Why this is a separate chain rather than just "making build_assistant_chain
+    stream": ``RunnableLambda`` wraps a plain function that returns ONE value
+    when it's done -- there's no way for LCEL to get partial output out of it
+    early, no matter how it's called. True incremental (token-by-token)
+    streaming only works through the chain's ``.stream()``/``.astream()``
+    when EVERY link is a real streaming-capable ``Runnable``: ``ChatOllama``
+    implements ``_stream()`` natively, and ``StrOutputParser`` forwards each
+    incoming ``AIMessageChunk`` as the growing string of ``.content`` so far.
+    This is exactly the same "use our own LLMProvider for telemetry vs. a
+    real BaseChatModel for LangChain-native features" tradeoff already made
+    for ``build_tool_calling_chain`` -- streaming, like tool-calling, needs a
+    real chat-model Runnable.
+
+    Call ``.stream({"user_request": "..."})`` and iterate the result for
+    incremental chunks, or ``.invoke(...)``/``.ainvoke(...)`` as usual for
+    the whole answer at once (LCEL chains support both from the same
+    definition -- no separate "streaming version" of the chain is needed
+    beyond swapping which link talks to the model).
+    """
+    from langchain_ollama import ChatOllama
+
+    resolved_model = model or MODEL_CATALOG[tier].ollama_model
+    llm = ChatOllama(model=resolved_model, base_url=base_url)
+    partial_prompt = ASSISTANT_PERSONA_TEMPLATE.partial(
+        company_name=DEFAULT_COMPANY_NAME,
+        current_date=date.today().isoformat(),
+    )
+    return partial_prompt | llm | StrOutputParser()
+
+
 MAX_TOOL_ROUNDS = 3  # same spirit as ReActAgent.MAX_ITERATIONS -- a hard cap
 
 
@@ -251,6 +291,97 @@ def build_tool_calling_chain(
     return RunnableLambda(_invoke)
 
 
+def _stream_tool_calling_loop(
+    llm_with_tools: Runnable,
+    user_request: str,
+    chat_history: list[BaseMessage] | None = None,
+) -> Iterator[str]:
+    """Streaming counterpart to ``_run_tool_calling_loop``: yields the
+    model's answer text incrementally (token-by-token, as the chunks arrive
+    from Ollama) instead of returning one complete string at the end.
+
+    Each round calls ``llm_with_tools.stream(messages)`` instead of
+    ``.invoke(messages)``, accumulating the ``AIMessageChunk``s with ``+``
+    (LangChain message chunks implement ``__add__`` precisely so a stream can
+    be reassembled into the same complete message ``.invoke()`` would have
+    returned, including ``.tool_calls``). Any text content chunks are yielded
+    to the caller AS THEY ARRIVE.
+
+    In practice, a round where the model decides to call a tool emits little
+    or no natural-language ``content`` (just tool-call tokens, which live in
+    ``.tool_call_chunks``, not ``.content``) -- so yielding ``chunk.content``
+    unconditionally on every round is safe: tool-deciding rounds simply yield
+    nothing (or a few stray words some models emit), and only the FINAL round
+    (the one with no tool calls) produces the real streamed answer text.
+    """
+    messages: list[BaseMessage] = list(chat_history or []) + [HumanMessage(content=user_request)]
+
+    for _ in range(MAX_TOOL_ROUNDS):
+        full: AIMessage | None = None
+        for chunk in llm_with_tools.stream(messages):
+            full = chunk if full is None else full + chunk
+            if chunk.content:
+                yield chunk.content
+
+        if full is None:  # defensive: model produced an empty stream
+            return
+        messages.append(full)
+
+        if not full.tool_calls:
+            return  # that was the final answer -- already streamed above
+
+        for call in full.tool_calls:
+            tool = _TOOLS_BY_NAME.get(call["name"])
+            if tool is None:
+                result = f"Error: unknown tool '{call['name']}'"
+            else:
+                try:
+                    result = tool.invoke(call["args"])
+                except Exception as exc:  # defensive: never let a bad tool call crash the chain
+                    result = f"Error running tool '{call['name']}': {exc}"
+            messages.append(ToolMessage(content=str(result), tool_call_id=call["id"]))
+
+    # Hit the round cap without a final text-only round -- nothing further to
+    # stream (mirrors _run_tool_calling_loop's "last_ai_message" fallback,
+    # except there is no extra text to emit since it would already have been
+    # yielded above if the model produced any).
+
+
+def build_tool_calling_chain_streaming(
+    llm_with_tools: Runnable | None = None,
+    model: str | None = None,
+    base_url: str = OLLAMA_BASE_URL,
+) -> Runnable:
+    """Streaming counterpart to ``build_tool_calling_chain``.
+
+    Wraps ``_stream_tool_calling_loop`` in a ``RunnableGenerator``
+    (``langchain_core.runnables``) rather than ``RunnableLambda``, since a
+    ``RunnableLambda`` can only return one finished value -- a
+    ``RunnableGenerator`` is LCEL's primitive for a link that yields a
+    sequence of outputs, which is what makes ``.stream(...)`` on the
+    returned chain actually emit chunks incrementally instead of blocking
+    until the whole answer is ready. ``.invoke(...)`` still works exactly as
+    before (it consumes the full generator and concatenates the string
+    chunks), so this is a drop-in replacement wherever ``.invoke()`` was
+    used, with ``.stream()`` now also available.
+    """
+    if llm_with_tools is None:
+        from langchain_ollama import ChatOllama
+
+        resolved_model = model or MODEL_CATALOG["powerful"].ollama_model
+        llm_with_tools = ChatOllama(model=resolved_model, base_url=base_url).bind_tools(
+            AVAILABLE_TOOLS
+        )
+
+    def _transform(input_iter: Iterator[dict]) -> Iterator[str]:
+        for inputs in input_iter:
+            yield from _stream_tool_calling_loop(
+                llm_with_tools, inputs["user_request"], inputs.get("chat_history")
+            )
+
+    return RunnableGenerator(_transform)
+
+
 def build_tool_calling_chain_with_memory(
     llm_with_tools: Runnable | None = None,
     model: str | None = None,
@@ -280,3 +411,32 @@ def build_tool_calling_chain_with_memory(
         input_messages_key="user_request",
         history_messages_key="chat_history",
     )
+
+
+def build_tool_calling_chain_streaming_with_memory(
+    llm_with_tools: Runnable | None = None,
+    model: str | None = None,
+    base_url: str = OLLAMA_BASE_URL,
+) -> RunnableWithMessageHistory:
+    """Combines ``build_tool_calling_chain_streaming`` with the same
+    ``RunnableWithMessageHistory`` session memory used by
+    ``build_tool_calling_chain_with_memory`` -- i.e. streamed output AND
+    server-side conversational memory, keyed by ``session_id``, at the same
+    time. ``RunnableWithMessageHistory`` is itself just a wrapper that reads
+    history before, and records it after, any underlying ``Runnable`` -- it
+    works identically whether that Runnable is a ``RunnableLambda`` (one
+    final value) or a ``RunnableGenerator`` (a stream of chunks), so no
+    other changes are needed to get both features together.
+
+    Call ``.stream({"user_request": "..."}, config={"configurable": {"session_id": "..."}})``.
+    """
+    base_chain = build_tool_calling_chain_streaming(
+        llm_with_tools=llm_with_tools, model=model, base_url=base_url
+    )
+    return RunnableWithMessageHistory(
+        base_chain,
+        get_session_history,
+        input_messages_key="user_request",
+        history_messages_key="chat_history",
+    )
+

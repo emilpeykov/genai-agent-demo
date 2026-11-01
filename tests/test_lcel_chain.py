@@ -1,13 +1,15 @@
 from unittest.mock import MagicMock
 from uuid import uuid4
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.prompts import PromptTemplate
 
 from app.lcel_chain import (
     build_assistant_chain,
     build_prompt_model_parser_chain,
     build_tool_calling_chain,
+    build_tool_calling_chain_streaming,
+    build_tool_calling_chain_streaming_with_memory,
     build_tool_calling_chain_with_memory,
     get_session_history,
 )
@@ -218,3 +220,72 @@ def test_build_tool_calling_chain_with_memory_isolates_different_sessions():
         m.content for m in session_b_call_messages if m.__class__.__name__ == "HumanMessage"
     ]
     assert human_texts == ["what did I say before?"]
+
+
+def test_build_tool_calling_chain_streaming_yields_chunks_when_no_tool_call():
+    llm_with_tools = MagicMock()
+    llm_with_tools.stream.return_value = [
+        AIMessageChunk(content="Hello"),
+        AIMessageChunk(content=", world"),
+        AIMessageChunk(content="!"),
+    ]
+
+    chain = build_tool_calling_chain_streaming(llm_with_tools=llm_with_tools)
+    chunks = list(chain.stream({"user_request": "hi"}))
+
+    assert chunks == ["Hello", ", world", "!"]
+    llm_with_tools.stream.assert_called_once()
+
+
+def test_build_tool_calling_chain_streaming_invoke_concatenates_full_answer():
+    llm_with_tools = MagicMock()
+    llm_with_tools.stream.return_value = [
+        AIMessageChunk(content="partial "),
+        AIMessageChunk(content="answer"),
+    ]
+
+    chain = build_tool_calling_chain_streaming(llm_with_tools=llm_with_tools)
+    result = chain.invoke({"user_request": "hi"})
+
+    assert result == "partial answer"
+
+
+def test_build_tool_calling_chain_streaming_executes_tool_then_streams_final_answer():
+    llm_with_tools = MagicMock()
+    first_round = [
+        AIMessageChunk(
+            content="",
+            tool_call_chunks=[
+                {"name": "calculator", "args": '{"expression": "2 + 2"}', "id": "call1", "index": 0}
+            ],
+        )
+    ]
+    second_round = [AIMessageChunk(content="4")]
+    llm_with_tools.stream.side_effect = [first_round, second_round]
+
+    chain = build_tool_calling_chain_streaming(llm_with_tools=llm_with_tools)
+    chunks = list(chain.stream({"user_request": "what is 2 + 2?"}))
+
+    assert chunks == ["4"]
+    assert llm_with_tools.stream.call_count == 2
+    second_call_messages = llm_with_tools.stream.call_args_list[1][0][0]
+    tool_messages = [m for m in second_call_messages if m.__class__.__name__ == "ToolMessage"]
+    assert tool_messages[0].content == "4"
+
+
+def test_build_tool_calling_chain_streaming_with_memory_remembers_prior_turns():
+    llm_with_tools = MagicMock()
+    llm_with_tools.stream.return_value = [AIMessageChunk(content="ok")]
+
+    chain = build_tool_calling_chain_streaming_with_memory(llm_with_tools=llm_with_tools)
+    config = {"configurable": {"session_id": str(uuid4())}}
+
+    list(chain.stream({"user_request": "my name is Bob"}, config=config))
+    list(chain.stream({"user_request": "what is my name?"}, config=config))
+
+    second_call_messages = llm_with_tools.stream.call_args_list[1][0][0]
+    human_texts = [
+        m.content for m in second_call_messages if m.__class__.__name__ == "HumanMessage"
+    ]
+    assert human_texts == ["my name is Bob", "what is my name?"]
+

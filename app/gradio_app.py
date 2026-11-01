@@ -17,7 +17,9 @@ import gradio as gr
 from app.agent import Agent
 from app.lcel_chain import (
     build_assistant_chain,
+    build_assistant_chain_streaming,
     build_tool_calling_chain,
+    build_tool_calling_chain_streaming,
     build_tool_calling_chain_with_memory,
 )
 from app.react_agent import ReActAgent
@@ -25,9 +27,11 @@ from app.react_agent import ReActAgent
 _rule_based_agent = Agent()
 _react_agent = ReActAgent()
 _lcel_chain = build_assistant_chain()
+_lcel_chain_streaming = build_assistant_chain_streaming()
 # Not built eagerly -- see app.main for why (requires Ollama to actually use).
 _lcel_tool_chain = None
 _lcel_tool_chain_with_memory = None
+_lcel_tool_chain_streaming = None
 
 
 def _get_lcel_tool_chain():
@@ -42,6 +46,13 @@ def _get_lcel_tool_chain_with_memory():
     if _lcel_tool_chain_with_memory is None:
         _lcel_tool_chain_with_memory = build_tool_calling_chain_with_memory()
     return _lcel_tool_chain_with_memory
+
+
+def _get_lcel_tool_chain_streaming():
+    global _lcel_tool_chain_streaming
+    if _lcel_tool_chain_streaming is None:
+        _lcel_tool_chain_streaming = build_tool_calling_chain_streaming()
+    return _lcel_tool_chain_streaming
 
 # The separator our own replies use to append debug metadata (tool used,
 # cost, etc.) below the actual answer -- see the "meta" strings below. When
@@ -123,6 +134,27 @@ def _chat_lcel_tools_memory(message: str, history: list, session_id: str) -> str
     )
 
 
+def _chat_lcel_stream(message: str, history: list):
+    # Gradio's ChatInterface treats a GENERATOR function specially: each
+    # yielded value replaces the displayed (partial) response so far, giving
+    # a live token-by-token typing effect instead of a single blocking
+    # return -- this is what actually fixes the "wait a long time, then the
+    # whole answer appears at once" latency complaint. We yield the growing
+    # string (not just the new chunk), since that's what Gradio expects.
+    partial = ""
+    for chunk in _lcel_chain_streaming.stream({"user_request": message}):
+        partial += chunk
+        yield partial
+
+
+def _chat_lcel_tools_stream(message: str, history: list):
+    # Streaming version of _chat_lcel_tools. Requires Ollama running locally.
+    partial = ""
+    for chunk in _get_lcel_tool_chain_streaming().stream({"user_request": message}):
+        partial += chunk
+        yield partial
+
+
 def build_app() -> gr.Blocks:
     with gr.Blocks(title="GenAI Agent Demo") as demo:
         gr.Markdown(
@@ -162,6 +194,21 @@ def build_app() -> gr.Blocks:
                     "Tell me a fun fact.",
                 ],
             )
+        with gr.Tab("LCEL chain streaming (/chat/lcel/stream)"):
+            gr.Markdown(
+                "Same chain as the 'LCEL chain' tab, but built on a real "
+                "`ChatOllama` Runnable (`prompt | ChatOllama | StrOutputParser`) "
+                "so the answer streams in token-by-token instead of appearing "
+                "all at once after a long wait. See "
+                "`app.lcel_chain.build_assistant_chain_streaming`."
+            )
+            gr.ChatInterface(
+                fn=_chat_lcel_stream,
+                examples=[
+                    "What is the refund policy?",
+                    "Tell me a fun fact.",
+                ],
+            )
         with gr.Tab("LCEL chain + tools (/chat/lcel/tools)"):
             gr.Markdown(
                 "LCEL chain using LangChain's native `bind_tools()` -- the "
@@ -172,6 +219,21 @@ def build_app() -> gr.Blocks:
             )
             gr.ChatInterface(
                 fn=_chat_lcel_tools,
+                examples=[
+                    "What is 23 times 17?",
+                    "Check the README and tell me what this project does.",
+                ],
+            )
+        with gr.Tab("LCEL chain + tools streaming (/chat/lcel/tools/stream)"):
+            gr.Markdown(
+                "Same tool-calling chain as the tab above, but streamed: each "
+                "round's model output is yielded as it arrives from Ollama, "
+                "so the FINAL answer (after any tool calls) appears "
+                "incrementally instead of all at once. See "
+                "`app.lcel_chain.build_tool_calling_chain_streaming`."
+            )
+            gr.ChatInterface(
+                fn=_chat_lcel_tools_stream,
                 examples=[
                     "What is 23 times 17?",
                     "Check the README and tell me what this project does.",
