@@ -13,10 +13,12 @@ from __future__ import annotations
 import gradio as gr
 
 from app.agent import Agent
+from app.lcel_chain import build_assistant_chain
 from app.react_agent import ReActAgent
 
 _rule_based_agent = Agent()
 _react_agent = ReActAgent()
+_lcel_chain = build_assistant_chain()
 
 # The separator our own replies use to append debug metadata (tool used,
 # cost, etc.) below the actual answer -- see the "meta" strings below. When
@@ -76,6 +78,11 @@ def _chat_react(message: str, history: list) -> str:
     return result.answer + meta
 
 
+def _chat_lcel(message: str, history: list) -> str:
+    # Stateless, like /chat/lcel -- the chain has no memory/history input.
+    return _lcel_chain.invoke({"user_request": message})
+
+
 def build_app() -> gr.Blocks:
     with gr.Blocks(title="GenAI Agent Demo") as demo:
         gr.Markdown(
@@ -100,6 +107,19 @@ def build_app() -> gr.Blocks:
                     "How quickly do you respond to support tickets?",
                     "How much memory is this machine using right now?",
                     "Count the files in the current directory.",
+                ],
+            )
+        with gr.Tab("LCEL chain (/chat/lcel)"):
+            gr.Markdown(
+                "Declarative `prompt | model | output_parser` chain -- no tool "
+                "use, no routing, just the master persona prompt sent straight "
+                "to the model. See `app.lcel_chain.build_assistant_chain`."
+            )
+            gr.ChatInterface(
+                fn=_chat_lcel,
+                examples=[
+                    "What is the refund policy?",
+                    "Tell me a fun fact.",
                 ],
             )
     return demo

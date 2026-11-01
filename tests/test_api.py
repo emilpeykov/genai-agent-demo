@@ -30,3 +30,11 @@ def test_chat_endpoint_llm_path():
 def test_chat_endpoint_rejects_empty_prompt():
     response = client.post("/chat", json={"prompt": ""})
     assert response.status_code == 422
+
+
+def test_chat_lcel_endpoint_returns_answer():
+    response = client.post("/chat/lcel", json={"prompt": "Tell me a fun fact."})
+    assert response.status_code == 200
+    body = response.json()
+    assert isinstance(body["answer"], str)
+    assert body["answer"]

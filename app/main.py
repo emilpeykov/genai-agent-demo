@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
 from app.agent import Agent, AgentResult
+from app.lcel_chain import build_assistant_chain
 from app.react_agent import ReActAgent, ReActResult
 
 app = FastAPI(
@@ -23,6 +24,9 @@ app = FastAPI(
 
 _agent = Agent()
 _react_agent = ReActAgent()
+# Built once at import time -- building it just composes Runnables (cheap,
+# no network call), so there's no need to rebuild it per-request.
+_lcel_chain = build_assistant_chain()
 
 
 class ChatMessage(BaseModel):
@@ -58,6 +62,10 @@ class ChatResponse(BaseModel):
         return cls(**result.__dict__)
 
 
+class LcelChatResponse(BaseModel):
+    answer: str
+
+
 class ReActStepResponse(BaseModel):
     tool_name: str
     tool_args: dict
@@ -91,6 +99,19 @@ def health() -> dict[str, str]:
 def chat(request: ChatRequest) -> ChatResponse:
     result = _agent.handle(request.prompt)
     return ChatResponse.from_agent_result(result)
+
+
+@app.post("/chat/lcel", response_model=LcelChatResponse)
+def chat_lcel(request: ChatRequest) -> LcelChatResponse:
+    """Same plain-LLM task as /chat's non-tool path, but run through the
+    declarative LCEL chain from ``app.lcel_chain.build_assistant_chain``
+    (``prompt | model | output_parser``) instead of ``Agent.handle()``'s
+    imperative routing. No tool-use, routing metadata, or cost/latency
+    telemetry -- just the rendered prompt sent straight to the model and
+    the parsed text answer, to demonstrate calling an LCEL ``Runnable``
+    end-to-end."""
+    answer = _lcel_chain.invoke({"user_request": request.prompt})
+    return LcelChatResponse(answer=answer)
 
 
 @app.post("/agent/react", response_model=ReActResponse)
