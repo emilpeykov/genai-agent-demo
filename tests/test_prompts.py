@@ -62,6 +62,6 @@ def test_render_react_system_prompt_tells_model_memory_does_not_need_tools():
     # that tool calls must go through the real tool-calling mechanism.
     rendered = render_react_system_prompt(["write_file"])
 
-    assert "ALREADY remember" in rendered
+    assert "Do NOT call 'write_file'" in rendered
     assert "never write out a JSON object" in rendered
 

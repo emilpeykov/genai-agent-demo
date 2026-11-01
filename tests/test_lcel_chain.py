@@ -132,7 +132,7 @@ def test_build_tool_calling_chain_sends_a_system_prompt_with_tool_guidance():
     sent_messages = llm_with_tools.invoke.call_args[0][0]
     assert sent_messages[0].__class__.__name__ == "SystemMessage"
     assert "write_file" in sent_messages[0].content
-    assert "ALREADY remember" in sent_messages[0].content
+    assert "Do NOT call 'write_file'" in sent_messages[0].content
     assert "never write out a JSON object" in sent_messages[0].content
 
 
@@ -265,7 +265,7 @@ def test_build_tool_calling_chain_streaming_sends_a_system_prompt_with_tool_guid
     sent_messages = llm_with_tools.stream.call_args[0][0]
     assert sent_messages[0].__class__.__name__ == "SystemMessage"
     assert "write_file" in sent_messages[0].content
-    assert "ALREADY remember" in sent_messages[0].content
+    assert "Do NOT call 'write_file'" in sent_messages[0].content
 
 
 def test_build_tool_calling_chain_streaming_invoke_concatenates_full_answer():
