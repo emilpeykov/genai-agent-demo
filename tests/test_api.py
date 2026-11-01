@@ -12,6 +12,18 @@ def test_health_endpoint():
     assert response.json() == {"status": "ok"}
 
 
+def test_warm_up_vector_indexes_is_a_noop_under_pytest():
+    # Regression test: _warm_up_vector_indexes must never make a real
+    # network call to Ollama during the test suite (PYTEST_CURRENT_TEST is
+    # always set by pytest itself) -- it should return immediately without
+    # starting a background thread.
+    import threading
+
+    before = threading.active_count()
+    main_module._warm_up_vector_indexes()
+    assert threading.active_count() == before
+
+
 def test_chat_endpoint_tool_path():
     response = client.post("/chat", json={"prompt": "10 * 4"})
     assert response.status_code == 200

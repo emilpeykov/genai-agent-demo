@@ -24,6 +24,22 @@ def test_iter_source_files_includes_python_and_excludes_cache_dirs(tmp_path):
     assert rel_paths == {"app/foo.py", "README.md"}
 
 
+def test_iter_source_files_covers_whole_project_including_subdirs(tmp_path):
+    # Regression test: the index must cover the WHOLE project tree, not just
+    # app/ -- e.g. tests/, top-level config files, and other source
+    # languages (like a stray src/Main.java) in nested subdirectories.
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "Main.java").write_text("class Main {}\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_foo.py").write_text("def test_foo(): pass\n")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+
+    files = _iter_source_files(tmp_path)
+
+    rel_paths = {p.relative_to(tmp_path).as_posix() for p in files}
+    assert rel_paths == {"src/Main.java", "tests/test_foo.py", "pyproject.toml"}
+
+
 def test_chunk_file_splits_long_file_into_overlapping_chunks(tmp_path):
     total_lines = CHUNK_LINES + 20
     content = "\n".join(f"line {i}" for i in range(total_lines))

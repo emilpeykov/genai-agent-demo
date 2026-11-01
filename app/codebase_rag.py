@@ -24,7 +24,17 @@ from app.config import OLLAMA_BASE_URL
 from app.rag import KnowledgeBaseIndex, RagUnavailableError
 
 # Only index source-ish, human-readable files; skip caches/venvs/binaries.
-INCLUDED_EXTENSIONS = {".py", ".md", ".txt", ".toml", ".ini", ".cfg", ".yml", ".yaml"}
+INCLUDED_EXTENSIONS = {
+    ".py",
+    ".md",
+    ".txt",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".yml",
+    ".yaml",
+    ".java",  # covers src/Main.java -- keeps the index "whole project", not just Python
+}
 EXCLUDED_DIR_NAMES = {
     "__pycache__",
     ".venv",

@@ -6,6 +6,10 @@ surface routing/cost/latency metadata (useful for dashboards and debugging).
 """
 from __future__ import annotations
 
+import os
+import threading
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -21,6 +25,59 @@ from app.lcel_chain import (
 )
 from app.react_agent import ReActAgent, ReActResult
 
+
+def _warm_up_vector_indexes() -> None:
+    """Pre-build the codebase/README FAISS indexes in a background thread as
+    soon as the server starts, instead of leaving them fully lazy.
+
+    Both ``app.codebase_rag`` (whole-project source code) and
+    ``app.readme_rag`` (README.md) build their FAISS index by making ONE
+    Ollama embedding call per chunk, sequentially, the first time their
+    'search' tool is actually used. For the codebase index specifically
+    (~100 chunks across the whole project), that means the very first
+    real user question that needs ``codebase_search`` pays the full
+    embedding-build cost synchronously, inside that request -- which is
+    exactly the kind of "it just hung for ages" experience we want to avoid.
+
+    Kicking the build off here, in a background thread, means it's usually
+    already finished (or well underway) by the time a real user asks a
+    code question, without blocking server startup or any individual
+    request on it. If Ollama isn't reachable yet (or at all), the build
+    simply fails silently here -- the SAME lazy build-on-first-use fallback
+    in ``app.codebase_rag``/``app.readme_rag`` still applies as before, so
+    nothing is broken, this is a pure latency optimization.
+
+    Skipped entirely under pytest (``PYTEST_CURRENT_TEST`` is set by pytest
+    itself) so the test suite never makes real network calls to Ollama just
+    from importing/constructing the FastAPI app.
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST") is not None:
+        return
+
+    def _build() -> None:
+        try:
+            from app.codebase_rag import _default_codebase_index
+
+            _default_codebase_index.search("warm up the index", k=1)
+        except Exception:
+            pass
+
+        try:
+            from app.readme_rag import _default_readme_index
+
+            _default_readme_index.search("warm up the index", k=1)
+        except Exception:
+            pass
+
+    threading.Thread(target=_build, daemon=True, name="vector-index-warmup").start()
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    _warm_up_vector_indexes()
+    yield
+
+
 app = FastAPI(
     title="GenAI Agent Demo",
     description=(
@@ -28,7 +85,9 @@ app = FastAPI(
         "cost/latency, and failure-mode mitigation."
     ),
     version="1.0.0",
+    lifespan=_lifespan,
 )
+
 
 _agent = Agent()
 _react_agent = ReActAgent()
