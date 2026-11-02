@@ -208,7 +208,11 @@ def build_assistant_chain_streaming(
     return partial_prompt | llm | StrOutputParser()
 
 
-MAX_TOOL_ROUNDS = 3  # same spirit as ReActAgent.MAX_ITERATIONS -- a hard cap
+MAX_TOOL_ROUNDS = 5  # matches ReActAgent.MAX_ITERATIONS -- a hard cap
+# (was 3: a real multi-step request -- e.g. "check the project dir, read the
+# README, and run the command it describes" -- legitimately needs 4+ rounds
+# (pwd -> list_directory -> readme_search -> run_shell_command), so 3 was too
+# tight and caused the round cap to be hit mid-task.)
 
 
 def _run_tool_calling_loop(
@@ -374,10 +378,21 @@ def _stream_tool_calling_loop(
                     result = f"Error running tool '{call['name']}': {exc}"
             messages.append(ToolMessage(content=str(result), tool_call_id=call["id"]))
 
-    # Hit the round cap without a final text-only round -- nothing further to
-    # stream (mirrors _run_tool_calling_loop's "last_ai_message" fallback,
-    # except there is no extra text to emit since it would already have been
-    # yielded above if the model produced any).
+    # Hit the round cap without a final text-only round. Normally any text
+    # content would already have been streamed above as each chunk arrived --
+    # BUT if every single round was a pure tool-call round (no natural-
+    # language content at all, which is common), nothing would ever have been
+    # yielded, and the caller (e.g. the Gradio streaming UI) would see a
+    # completely empty response with no indication anything happened at all.
+    # Regression: this is exactly what the user saw as "the agent just
+    # stopped -- no any answer". Emit an explicit fallback so there is always
+    # SOME visible output.
+    yield (
+        "\n\n_(Reached the tool-call round limit "
+        f"({MAX_TOOL_ROUNDS}) while still working through tool calls, "
+        "without producing a final text answer. Please try asking again, "
+        "or break the request into smaller steps.)_"
+    )
 
 
 def build_tool_calling_chain_streaming(

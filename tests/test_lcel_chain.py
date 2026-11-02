@@ -188,7 +188,9 @@ def test_build_tool_calling_chain_stops_after_max_rounds():
     result = chain.invoke({"user_request": "hello"})
 
     assert result == "still thinking"
-    assert llm_with_tools.invoke.call_count == 3  # MAX_TOOL_ROUNDS
+    from app.lcel_chain import MAX_TOOL_ROUNDS
+
+    assert llm_with_tools.invoke.call_count == MAX_TOOL_ROUNDS
 
 
 def test_get_session_history_returns_same_instance_for_same_session_id():
@@ -319,4 +321,37 @@ def test_build_tool_calling_chain_streaming_with_memory_remembers_prior_turns():
         m.content for m in second_call_messages if m.__class__.__name__ == "HumanMessage"
     ]
     assert human_texts == ["my name is Bob", "what is my name?"]
+
+
+def test_build_tool_calling_chain_streaming_never_silently_yields_nothing_at_round_cap():
+    # Regression test: a user reported "the agent just stopped -- no any
+    # answer" for a multi-step request (check project dir, read README, run
+    # the command it describes). Root cause: every one of MAX_TOOL_ROUNDS
+    # rounds was a pure tool-call round (no natural-language content at all),
+    # so the old code hit the round cap and the generator yielded literally
+    # nothing -- the Gradio streaming UI showed a completely empty response.
+    # There must always be SOME visible output, even in the worst case.
+    from app.lcel_chain import MAX_TOOL_ROUNDS
+
+    llm_with_tools = MagicMock()
+    tool_only_round = [
+        AIMessageChunk(
+            content="",
+            tool_call_chunks=[
+                {"name": "calculator", "args": '{"expression": "2 + 2"}', "id": "c", "index": 0}
+            ],
+        )
+    ]
+    llm_with_tools.stream.side_effect = [tool_only_round] * MAX_TOOL_ROUNDS
+
+    chain = build_tool_calling_chain_streaming(llm_with_tools=llm_with_tools)
+    chunks = list(chain.stream({"user_request": "do a multi-step task"}))
+
+    full_text = "".join(chunks)
+    assert full_text.strip() != ""
+    assert "round limit" in full_text
+    assert llm_with_tools.stream.call_count == MAX_TOOL_ROUNDS
+
+
+
 

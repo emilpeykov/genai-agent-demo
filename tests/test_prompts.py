@@ -93,3 +93,21 @@ def test_render_react_system_prompt_tells_model_to_look_up_commands_before_runni
     assert "Do NOT guess, invent, or " in rendered
     assert "NOT a sign the " in rendered
 
+
+def test_render_react_system_prompt_distinguishes_test_command_from_setup_commands():
+    # Regression test: asked to read the README and "execute the test command
+    # described there", the model ran "uvicorn app.main:app --reload" (a
+    # SETUP/run step from the "Running locally" section) instead of the
+    # actual "Try it:" curl example -- which failed with "Address already in
+    # use" (since a server was already running and answering the request),
+    # wasting a tool-call round and contributing to "the agent just stopped,
+    # no answer" when the round cap was then hit. The prompt must make clear
+    # the "test command" means the example request, not the setup/run steps,
+    # and that starting another server is both unnecessary and will fail.
+    rendered = render_react_system_prompt(["run_shell_command", "readme_search", "read_file"])
+
+    assert "Address already in use" in rendered
+    assert "already running inside a live server process" in rendered
+    assert "Do NOT run setup commands" in rendered
+
+
