@@ -79,3 +79,17 @@ def test_render_react_system_prompt_tells_model_it_can_answer_project_meta_quest
     assert "never say you lack the necessary tools" in rendered
 
 
+def test_render_react_system_prompt_tells_model_to_look_up_commands_before_running_them():
+    # Regression test: asked to "run the curl test command shown in the
+    # README", a model fabricated an UNRELATED command
+    # (curl https://example.com | grep 'Hello World') instead of looking up
+    # the real one via readme_search/read_file -- then reported on that
+    # made-up command's result as if it answered the question. The prompt
+    # must forbid guessing/inventing commands and instead require looking
+    # up the real text first.
+    rendered = render_react_system_prompt(["run_shell_command", "readme_search", "read_file"])
+
+    assert "COMMAND LOOKUP" in rendered
+    assert "Do NOT guess, invent, or " in rendered
+    assert "NOT a sign the " in rendered
+

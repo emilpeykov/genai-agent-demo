@@ -82,6 +82,26 @@ def test_run_shell_command_docstring_mentions_full_freedom():
     assert "no allowlist" in docstring.lower() or "no restrictions" in docstring.lower()
 
 
+def test_run_shell_command_timeout_is_long_enough_for_this_apps_own_endpoints():
+    # Regression test: the timeout used to be 10s, which is shorter than
+    # this app's OWN slower LLM-backed endpoints (e.g. curling
+    # http://127.0.0.1:8000/chat can legitimately take well over 10s with a
+    # "powerful" tier model) can take to respond -- every such self-curl was
+    # killed by the tool's own timeout before the real answer came back,
+    # producing a generic "command timed out" observation that the model
+    # then misread as "the server is down". 90s gives real headroom.
+    from app.tools import SHELL_COMMAND_TIMEOUT_SECONDS
+
+    assert SHELL_COMMAND_TIMEOUT_SECONDS >= 60
+
+
+def test_run_shell_command_reports_a_real_timeout(monkeypatch):
+    # Patch the timeout down to 1s so this test doesn't actually take 90s.
+    monkeypatch.setattr("app.tools.SHELL_COMMAND_TIMEOUT_SECONDS", 1)
+    result = run_shell_command.invoke({"command": "sleep 5"})
+    assert result == "Error: command timed out after 1s"
+
+
 def test_read_file_returns_exact_file_content(tmp_path):
     file_path = tmp_path / "README.md"
     file_path.write_text("# My Project\n\nThis project does X.\n")

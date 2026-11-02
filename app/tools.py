@@ -126,7 +126,19 @@ def wikipedia_search(query: str) -> str:
 # tool that reads attacker-controlled web pages) -- a model can be tricked
 # into running destructive commands (rm -rf, curl | sh, etc.) and nothing
 # here will stop it. If you ever productionize this, bring back the allowlist.
-SHELL_COMMAND_TIMEOUT_SECONDS = 10
+# SHELL_COMMAND_TIMEOUT_SECONDS was originally 10s, which seemed generous for
+# typical shell one-liners (ls, wc, grep, pwd) -- but this app's OWN HTTP
+# endpoints (e.g. curl'ing http://127.0.0.1:8000/chat from within a command,
+# which the model is explicitly encouraged to do when asked to "run the curl
+# test command") can legitimately take anywhere from a few seconds to over a
+# minute, since they call a real local LLM (especially the "powerful" tier /
+# devstral:24b, which is slow on modest hardware). With only 10s, every such
+# self-curl was getting killed by THIS timeout before the LLM even finished
+# responding, producing a generic "Error: command timed out after 10s" that
+# the model then misinterpreted as "the server isn't running" -- when really
+# the server was running and answering, just slower than 10s. Raised to 90s
+# to comfortably cover a single slow local LLM round-trip.
+SHELL_COMMAND_TIMEOUT_SECONDS = 90
 SHELL_OUTPUT_MAX_CHARS = 4000
 
 
@@ -140,7 +152,8 @@ def run_shell_command(command: str) -> str:
     features can be used -- you have full freedom to run whatever command is
     needed to answer the question, including multi-step pipelines like
     "ls -la | wc -l" or "find . -name '*.py' | xargs wc -l". There is a
-    10-second timeout and output is truncated if extremely long, but
+    90-second timeout (enough to curl this app's OWN slower endpoints, which
+    call a real local LLM) and output is truncated if extremely long, but
     otherwise this behaves like a normal shell prompt. Use it for file
     system, process, OS, and system-info questions, or anything else where
     running a real command gives a more accurate answer than guessing.

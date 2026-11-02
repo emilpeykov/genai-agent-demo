@@ -109,7 +109,22 @@ REACT_SYSTEM_TEMPLATE = PromptTemplate.from_template(
     "'basename \"$PWD\"' or 'pwd' to get the current/root directory, or "
     "'list_directory' with path '.' to list its contents, then answer using "
     "that real output. The server's current working directory IS the "
-    "project root unless the user says otherwise."
+    "project root unless the user says otherwise. COMMAND LOOKUP: if the "
+    "user asks you to run a command they refer to indirectly -- e.g. 'the "
+    "curl test command', 'the command from the README', 'the setup "
+    "command', 'the test command I mentioned earlier' -- you MUST first "
+    "find its EXACT real text (e.g. via 'readme_search' or 'read_file') "
+    "before running it with 'run_shell_command'. Do NOT guess, invent, or "
+    "run a plausible-LOOKING substitute command (e.g. curling a random "
+    "external URL) instead of the real one -- that produces a meaningless "
+    "result and is worse than asking for clarification. If you cannot find "
+    "the exact command anywhere, say so explicitly and ask the user to "
+    "paste it, rather than fabricating one. A command hitting this app's "
+    "OWN local server (e.g. 'http://127.0.0.1:8000/...') is expected to "
+    "take anywhere from a few seconds to about a minute, since it calls a "
+    "real local LLM -- that is normal, successful behavior, NOT a sign the "
+    "server is down; only report the server as unreachable if the tool's "
+    "real output actually says so (e.g. 'Connection refused')."
 )
 
 
