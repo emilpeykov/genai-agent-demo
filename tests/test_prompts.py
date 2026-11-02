@@ -111,3 +111,18 @@ def test_render_react_system_prompt_distinguishes_test_command_from_setup_comman
     assert "Do NOT run setup commands" in rendered
 
 
+def test_render_react_system_prompt_forbids_describing_a_plan_without_acting():
+    # Regression test: asked to "check the current dir, read the README, and
+    # execute the test command described there", the model wrote a long,
+    # helpful-sounding plan ("I'll start by setting up... Let's proceed with
+    # executing these steps...") but never actually issued ANY tool call in
+    # that turn -- the loop then correctly treated this as the model's final
+    # answer (no tool_calls were requested), so nothing was ever executed.
+    # The prompt must explicitly forbid describing-without-acting.
+    rendered = render_react_system_prompt(["run_shell_command", "readme_search", "read_file"])
+
+    assert "NEVER" in rendered
+    assert "describe a plan to call a tool and then stop without calling it" in rendered
+    assert "actually issue the real tool call in this SAME turn" in rendered
+
+

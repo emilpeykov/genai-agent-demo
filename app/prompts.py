@@ -136,7 +136,13 @@ REACT_SYSTEM_TEMPLATE = PromptTemplate.from_template(
     "take anywhere from a few seconds to about a minute, since it calls a "
     "real local LLM -- that is normal, successful behavior, NOT a sign the "
     "server is down; only report the server as unreachable if the tool's "
-    "real output actually says so (e.g. 'Connection refused')."
+    "real output actually says so (e.g. 'Connection refused'). NEVER "
+    "describe a plan to call a tool and then stop without calling it -- "
+    "e.g. do NOT write \"I'll run this now\" / \"Let's proceed with "
+    "executing these steps\" as your entire response. If the user asked "
+    "you to DO/run/execute/check something in this message, you must "
+    "actually issue the real tool call in this SAME turn before you stop; "
+    "only skip calling a tool if no tool is actually needed to answer."
 )
 
 
