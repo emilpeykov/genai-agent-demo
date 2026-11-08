@@ -402,7 +402,15 @@ def build_app() -> gr.Blocks:
                 "verified empirically to work reliably (unlike native "
                 "tool_calls) -- see the module docstring for the exact "
                 "tests. Shows both the final chain-of-thought AND which "
-                "tools were actually called."
+                "tools were actually called.\n\n"
+                "**⚠️ Known limitation:** reliable for simple, single-tool "
+                "asks. For multi-step tasks (e.g. 'read this file, then "
+                "edit it') live testing caught the model sometimes SKIPPING "
+                "the second tool call and just claiming success anyway -- "
+                "check the 'Tool calls' list below the answer to see what "
+                "ACTUALLY ran, don't just trust the final answer text for "
+                "anything destructive. See the module docstring's "
+                "'KNOWN REMAINING FAILURE MODE' section for details."
             )
             gr.ChatInterface(
                 fn=_chat_reasoning_react,

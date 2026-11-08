@@ -45,6 +45,17 @@ it. See ``app.reasoning_react_agent`` for a DIFFERENT protocol (the
 original, text-based ReAct-paper style) that WAS verified to work reliably
 with this same model -- use that module if you want reasoning AND tool use
 together.
+
+Also tested (and ruled out): a community-patched Ollama variant claiming to
+fix exactly this, ``MFDoom/deepseek-r1-tool-calling:14b`` (same base weights,
+a modified chat template intended to make native ``tool_calls`` work). Ran
+the identical calculator/shell-command tests against it on Ollama 0.32.0,
+with AND without ``"think": true`` (to rule out the chain-of-thought itself
+being the disruptor, per that variant's stated rationale) -- both came back
+with ``tool_calls: null`` every time, same narrate-instead-of-act failure as
+the unpatched model. So the patched template didn't fix anything here; the
+text-based ReAct protocol in ``app.reasoning_react_agent`` remains the only
+approach that was empirically confirmed to work.
 """
 from __future__ import annotations
 

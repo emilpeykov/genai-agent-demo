@@ -182,6 +182,15 @@ REASONING_REACT_SYSTEM_TEMPLATE = PromptTemplate.from_template(
     "nothing else before or after it (no other explanation text):\n"
     "Action: <tool_name>\n"
     'Action Input: {{"arg_name": "value", ...}}\n\n'
+    "ALWAYS include the Action Input line, even for a tool that takes NO "
+    'arguments -- in that case write exactly "Action Input: {{}}" (an empty '
+    "JSON object), never omit the line entirely.\n\n"
+    "Example of the ONLY acceptable way to call a tool with multiple "
+    "arguments (e.g. editing a file) -- plain text, no markdown code fence, "
+    "no bullet/number prefix, no bold, nothing before or after it:\n"
+    "Action: edit_file\n"
+    'Action Input: {{"path": "/tmp/example.py", "old_text": "foo", '
+    '"new_text": "bar"}}\n\n'
     "Do NOT write an Observation or Final Answer yourself in that same "
     "reply -- stop immediately after the Action Input line; the real tool "
     "result will be given back to you afterward as the next message. Once "
@@ -189,8 +198,12 @@ REASONING_REACT_SYSTEM_TEMPLATE = PromptTemplate.from_template(
     "the question), respond with:\n"
     "Final Answer: <your answer>\n\n"
     "Do not call a tool more than once with the same arguments. Narrating "
-    "or describing a plan to call a tool is never an acceptable substitute "
-    "for actually emitting the Action/Action Input lines above."
+    "or describing a plan to call a tool, explaining the plan in numbered "
+    "steps, or wrapping the Action/Action Input lines in a markdown code "
+    "fence or bold headers, is never an acceptable substitute for actually "
+    "emitting the two plain Action/Action Input lines above, exactly as "
+    "shown in the example -- even after a tool call fails or is rejected, "
+    "retry with those exact two lines instead of re-explaining your plan."
 )
 
 

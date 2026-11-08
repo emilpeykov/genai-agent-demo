@@ -39,6 +39,25 @@ module, in three stages:
      it could not have known), the model's Final Answer correctly used that
      real value -- not a hallucinated one.
 
+KNOWN REMAINING FAILURE MODE -- read carefully before trusting this for
+anything destructive: for simple, single-argument tools (calculator,
+read_file after one self-correction) this protocol is reliable. For
+MULTI-argument, multi-step tasks (e.g. "read this file, then edit it"), live
+testing also caught the model skipping the second tool call ENTIRELY and
+emitting "Final Answer: <file> has been successfully edited" WITHOUT ever
+calling ``edit_file`` -- the file was verifiably untouched on disk. This is
+a worse failure mode than simply hitting the iteration limit, because the
+textual answer is a confident, false claim of a side effect that never
+happened. Mitigation attempted here: the "Action Input" omission is now
+caught before invoking the tool (see the ``skeleton`` retry message below),
+which measurably helped the model fill in arguments correctly on retry --
+but it does NOT guarantee the model will attempt the call at all on a given
+turn. Practical takeaway: for multi-step/destructive tool chains with this
+model, always verify the actual side effect yourself (e.g. re-read the file)
+rather than trusting ``result.answer`` alone -- or use ``app.react_agent``
+with ``devstral:24b`` instead, which does not reasoning but has NOT shown
+this specific hallucinated-success behavior in testing.
+
 So, unlike ``app.reasoning`` (plain chat, no tools at all, by design), this
 module gives you DeepSeek-R1's reasoning AND reliable tool use from the same
 model family -- at the cost of needing our own small text-protocol parser
@@ -67,8 +86,9 @@ _STOP_SEQUENCES = ["Observation", "\nObservation"]
 _TOOLS_BY_NAME = {t.name: t for t in AVAILABLE_TOOLS}
 
 _ACTION_RE = re.compile(
-    r"Action:\s*(?P<name>[\w_]+)\s*\n+\s*Action Input:\s*(?P<args>\{.*\})",
-    re.DOTALL,
+    r"(?:^|\n)[ \t]*Action:[ \t]*(?P<name>[\w_]+)[ \t]*"
+    r"(?:\n+[ \t]*Action Input:[ \t]*(?P<args>\{.*\}))?",
+    re.DOTALL | re.MULTILINE,
 )
 _FINAL_ANSWER_RE = re.compile(r"Final Answer:\s*(?P<answer>.*)", re.DOTALL)
 
@@ -154,14 +174,44 @@ class ReasoningReActAgent:
             action_match = _ACTION_RE.search(content)
             if action_match:
                 name = action_match.group("name")
-                try:
-                    args = json.loads(action_match.group("args"))
-                except json.JSONDecodeError:
+                raw_args = action_match.group("args")
+                if raw_args is None:
+                    # No "Action Input:" line at all -- expected for a
+                    # zero-argument tool like system_resources(), which has
+                    # nothing to put there.
                     args = {}
+                else:
+                    try:
+                        args = json.loads(raw_args)
+                    except json.JSONDecodeError:
+                        args = {}
 
                 tool = _TOOLS_BY_NAME.get(name)
                 if tool is None:
                     observation = f"Error: unknown tool '{name}'"
+                elif not args and tool.args:
+                    # Regression guard: the model sometimes omits the Action
+                    # Input line entirely (or emits "{}") even for a tool
+                    # that DOES require arguments, especially for
+                    # multi-argument tools like write_file/edit_file. Rather
+                    # than invoking the tool (guaranteed to fail with a raw,
+                    # unhelpful Pydantic validation dump) and burning an
+                    # iteration figuring that out, give a direct, actionable
+                    # error naming the exact missing keys -- this measurably
+                    # helped the model self-correct within the iteration
+                    # budget during live testing.
+                    # A literal, copy-shapeable JSON skeleton (not just the
+                    # key names as prose) measurably reduced repeated
+                    # omissions during live testing on multi-argument tools
+                    # like edit_file/write_file, vs. naming the keys alone.
+                    skeleton = json.dumps({k: f"<{k}>" for k in tool.args})
+                    observation = (
+                        f"Error: no Action Input was given for '{name}', but it "
+                        f"requires arguments. Re-emit EXACTLY this shape (with "
+                        "real values instead of the <placeholders>):\n"
+                        f"Action: {name}\n"
+                        f"Action Input: {skeleton}"
+                    )
                 else:
                     try:
                         observation = str(tool.invoke(args))

@@ -97,6 +97,52 @@ def test_feeds_real_observation_back_as_a_user_turn(mock_post):
 
 
 @patch("app.reasoning_react_agent.httpx.post")
+def test_handles_zero_argument_tool_with_no_action_input_line(mock_post):
+    # Regression: system_resources() takes no arguments, so a compliant
+    # model may omit the "Action Input:" line entirely (there's nothing to
+    # put there) -- this must still parse as a real action, not be silently
+    # dropped and treated as a non-marker final answer.
+    mock_post.side_effect = [
+        _mock_chat_response(
+            {"role": "assistant", "content": "Action: system_resources", "thinking": ""}
+        ),
+        _mock_chat_response(
+            {"role": "assistant", "content": "Final Answer: memory usage reported.", "thinking": ""}
+        ),
+    ]
+
+    agent = ReasoningReActAgent(model="test-model")
+    result = agent.handle("How much memory is this machine using right now?")
+
+    assert len(result.steps) == 1
+    assert result.steps[0].tool_name == "system_resources"
+    assert result.steps[0].tool_args == {}
+    assert result.answer == "memory usage reported."
+
+
+@patch("app.reasoning_react_agent.httpx.post")
+def test_handles_zero_argument_tool_with_explicit_empty_action_input(mock_post):
+    mock_post.side_effect = [
+        _mock_chat_response(
+            {
+                "role": "assistant",
+                "content": "Action: system_resources\nAction Input: {}",
+                "thinking": "",
+            }
+        ),
+        _mock_chat_response(
+            {"role": "assistant", "content": "Final Answer: memory usage reported.", "thinking": ""}
+        ),
+    ]
+
+    agent = ReasoningReActAgent(model="test-model")
+    result = agent.handle("How much memory is this machine using right now?")
+
+    assert result.steps[0].tool_name == "system_resources"
+    assert result.steps[0].tool_args == {}
+
+
+@patch("app.reasoning_react_agent.httpx.post")
 def test_handles_malformed_action_input_gracefully(mock_post):
     mock_post.side_effect = [
         _mock_chat_response(
@@ -114,10 +160,16 @@ def test_handles_malformed_action_input_gracefully(mock_post):
     agent = ReasoningReActAgent(model="test-model")
     result = agent.handle("compute something weird")
 
-    # Malformed JSON args -- our regex requires a balanced-looking `{...}`
-    # with no unmatched braces, so this simply never matches as an action at
-    # all and the whole reply is treated as the (non-marker) answer instead.
-    assert result.steps == []
+    # Malformed JSON with no balanced closing brace -- the Action Input
+    # portion of the regex fails to match (it's optional), so the action
+    # NAME is still recognized but args falls back to {}. The tool is still
+    # invoked (with no args), producing a real (if unhelpful) error
+    # observation the model can see and react to, rather than silently
+    # dropping the whole turn.
+    assert len(result.steps) == 1
+    assert result.steps[0].tool_name == "calculator"
+    assert result.steps[0].tool_args == {}
+    assert "Error" in result.steps[0].observation
 
 
 @patch("app.reasoning_react_agent.httpx.post")
@@ -139,6 +191,35 @@ def test_handles_unknown_tool_name_gracefully(mock_post):
     result = agent.handle("do something weird")
 
     assert "unknown tool" in result.steps[0].observation
+
+
+@patch("app.reasoning_react_agent.httpx.post")
+def test_omitted_action_input_for_multi_arg_tool_gives_json_skeleton_retry(mock_post):
+    # Regression: live testing against a multi-argument tool (edit_file)
+    # showed the model sometimes writes "Action: edit_file" with NO Action
+    # Input line at all. Just naming the missing keys in prose wasn't
+    # enough to reliably get the model to self-correct -- a literal,
+    # copy-shapeable JSON skeleton (real key names, placeholder values) did
+    # measurably help, so the retry observation must include one.
+    mock_post.side_effect = [
+        _mock_chat_response(
+            {"role": "assistant", "content": "Action: edit_file", "thinking": ""}
+        ),
+        _mock_chat_response(
+            {"role": "assistant", "content": "Final Answer: gave up.", "thinking": ""}
+        ),
+    ]
+
+    agent = ReasoningReActAgent(model="test-model")
+    result = agent.handle("edit a file")
+
+    observation = result.steps[0].observation
+    assert result.steps[0].tool_args == {}
+    assert "path" in observation
+    assert "old_text" in observation
+    assert "new_text" in observation
+    # Must be a literal, parseable JSON object skeleton, not just prose.
+    assert "{" in observation and "}" in observation
 
 
 @patch("app.reasoning_react_agent.httpx.post")
