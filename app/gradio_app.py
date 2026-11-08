@@ -25,9 +25,11 @@ from app.lcel_chain import (
 )
 from app.react_agent import ReActAgent
 from app.reasoning import generate_with_reasoning
+from app.reasoning_react_agent import ReasoningReActAgent
 
 _rule_based_agent = Agent()
 _react_agent = ReActAgent()
+_reasoning_react_agent = ReasoningReActAgent()
 _lcel_chain = build_assistant_chain()
 _lcel_chain_streaming = build_assistant_chain_streaming()
 # Not built eagerly -- see app.main for why (requires Ollama to actually use).
@@ -195,6 +197,32 @@ def _chat_reasoning(message: str, history: list) -> str:
     return reasoning_md + result.answer
 
 
+def _chat_reasoning_react(message: str, history: list) -> str:
+    # Like /agent/react, but for the reasoning model via a text-based ReAct
+    # protocol instead of Ollama's native (unreliable, for this model)
+    # tool_calls mechanism -- see app.reasoning_react_agent's module
+    # docstring. Stateless w.r.t. conversation history, same as _chat_react.
+    conversation_history = _clean_history_for_model(history)
+    result = _reasoning_react_agent.handle(message, history=conversation_history)
+    if result.steps:
+        steps_md = "\n".join(
+            f"{i}. `{s.tool_name}({s.tool_args})` -> {s.observation[:200]}"
+            for i, s in enumerate(result.steps, start=1)
+        )
+    else:
+        steps_md = "(no tools called -- answered directly)"
+    reasoning_md = (
+        f"<details><summary>🤔 Show final reasoning</summary>\n\n{result.reasoning}\n\n</details>\n\n"
+        if result.reasoning
+        else ""
+    )
+    meta = (
+        f"\n\n---\n*model: `{result.model}` | iterations: {result.iterations} | "
+        f"hit iteration limit: {result.hit_iteration_limit}*\n\n**Tool calls:**\n{steps_md}"
+    )
+    return reasoning_md + result.answer + meta
+
+
 def build_app() -> gr.Blocks:
     with gr.Blocks(title="GenAI Agent Demo") as demo:
         gr.Markdown(
@@ -339,14 +367,16 @@ def build_app() -> gr.Blocks:
                 "legitimately take much longer than a normal completion -- "
                 "that's expected, not a hang.\n\n"
                 "**No tools here, on purpose:** this model claims tool-calling "
-                "support, but testing showed it doesn't reliably use it -- it "
-                "either ignores a provided tool and improvises an answer "
-                "itself (sometimes wrong despite correct-looking reasoning), "
-                "or narrates what a tool call WOULD return instead of making "
-                "a real one. See `app/reasoning.py`'s module docstring for "
-                "the specific tests. This tab only shows how the model "
-                "reasons over what it already knows -- for real tool use, "
-                "see the 'LCEL chain + tools' or 'ReAct agent' tabs instead."
+                "support via Ollama's native mechanism, but testing showed it "
+                "doesn't reliably use THAT -- it either ignores a provided tool "
+                "and improvises an answer itself (sometimes wrong despite "
+                "correct-looking reasoning), or narrates what a tool call WOULD "
+                "return instead of making a real one. See `app/reasoning.py`'s "
+                "module docstring for the specific tests. This tab only shows "
+                "how the model reasons over what it already knows -- for "
+                "reasoning model that ALSO reliably uses tools, see the "
+                "'Reasoning + tools' tab (a different, text-based protocol that "
+                "actually works for this model)."
             )
             gr.ChatInterface(
                 fn=_chat_reasoning,
@@ -355,6 +385,31 @@ def build_app() -> gr.Blocks:
                     "an hour later going 80mph on the same route, when does "
                     "the second train catch up?",
                     "Is 1009 a prime number? Show your reasoning.",
+                ],
+            )
+        with gr.Tab("Reasoning + tools (/agent/react/reasoning)"):
+            gr.Markdown(
+                "The SAME reasoning model (DeepSeek-R1) as the tab above, but "
+                "WITH reliable tool use -- via "
+                "`app.reasoning_react_agent.ReasoningReActAgent`. Ollama's "
+                "native `tools`/`tool_calls` JSON mechanism (used by the "
+                "'ReAct agent' tab) is NOT reliable for this model, so this "
+                "uses a different, older protocol instead: the model is "
+                "instructed to emit plain `Action:` / `Action Input:` text "
+                "lines (the original ReAct-paper style, predating 'function "
+                "calling' APIs), which we parse and execute ourselves, "
+                "feeding the REAL result back as the next turn. This was "
+                "verified empirically to work reliably (unlike native "
+                "tool_calls) -- see the module docstring for the exact "
+                "tests. Shows both the final chain-of-thought AND which "
+                "tools were actually called."
+            )
+            gr.ChatInterface(
+                fn=_chat_reasoning_react,
+                examples=[
+                    "What is 23 times 17? Use the calculator tool.",
+                    "Count the .py files in the current directory tree.",
+                    "How much memory is this machine using right now?",
                 ],
             )
     return demo

@@ -204,4 +204,36 @@ def test_chat_reasoning_stream_endpoint_streams_ndjson(monkeypatch):
     ]
 
 
+def test_agent_react_reasoning_endpoint_returns_steps_and_reasoning(monkeypatch):
+    from app.reasoning_react_agent import ReasoningReActResult, ReasoningReActStep
+
+    def _fake_handle(prompt: str, history=None):
+        return ReasoningReActResult(
+            answer="84",
+            reasoning="the observation confirms it",
+            steps=[
+                ReasoningReActStep(
+                    tool_name="calculator",
+                    tool_args={"expression": "12 * 7"},
+                    observation="84",
+                    reasoning="I should use the calculator",
+                )
+            ],
+            iterations=2,
+            model="deepseek-r1:14b",
+            hit_iteration_limit=False,
+        )
+
+    monkeypatch.setattr(main_module._reasoning_react_agent, "handle", _fake_handle)
+
+    response = client.post("/agent/react/reasoning", json={"prompt": "What's 12 times 7?"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["answer"] == "84"
+    assert body["reasoning"] == "the observation confirms it"
+    assert body["steps"][0]["tool_name"] == "calculator"
+    assert body["steps"][0]["observation"] == "84"
+    assert body["model"] == "deepseek-r1:14b"
+    assert body["hit_iteration_limit"] is False
 

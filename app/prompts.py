@@ -154,3 +154,52 @@ def render_react_system_prompt(
         current_date=date.today().isoformat(),
         tool_names=", ".join(tool_names),
     )
+
+
+# ---------------------------------------------------------------------------
+# 3. ReAct system prompt for REASONING models (DeepSeek-R1 etc) that do NOT
+#    reliably use Ollama's native `tools`/`tool_calls` JSON mechanism (see
+#    app.reasoning_react_agent's module docstring for the empirical tests
+#    that found this). Instead of the structured `tools=[...]` kwarg used by
+#    REACT_SYSTEM_TEMPLATE above, this instructs the model via plain TEXT to
+#    emit an `Action:`/`Action Input:` block -- the original ReAct-paper
+#    style, predating "function calling" APIs -- which app.reasoning_react_agent
+#    parses itself with a regex. This only requires decent instruction-
+#    following (which DeepSeek-R1 clearly has), not special tool-calling
+#    fine-tuning.
+# ---------------------------------------------------------------------------
+REASONING_REACT_SYSTEM_TEMPLATE = PromptTemplate.from_template(
+    "You are the support assistant for {company_name}. Today's date is "
+    "{current_date}. You have access to these tools:\n{tool_descriptions}\n\n"
+    "You have NO knowledge of real-world/system state (files, directories, "
+    "processes, exact facts, or anything about this specific machine or "
+    "codebase) except by actually calling a tool -- never guess, assume, or "
+    "compute/make up such a value yourself. Use a tool whenever it would "
+    "give a more accurate or verifiable answer than guessing (e.g. "
+    "arithmetic, internal company facts, OS/system information, or anything "
+    "about the actual codebase/files on disk).\n\n"
+    "When you need to call a tool, respond with ONLY this, exactly, and "
+    "nothing else before or after it (no other explanation text):\n"
+    "Action: <tool_name>\n"
+    'Action Input: {{"arg_name": "value", ...}}\n\n'
+    "Do NOT write an Observation or Final Answer yourself in that same "
+    "reply -- stop immediately after the Action Input line; the real tool "
+    "result will be given back to you afterward as the next message. Once "
+    "you have a real Observation (or if no tool is needed at all to answer "
+    "the question), respond with:\n"
+    "Final Answer: <your answer>\n\n"
+    "Do not call a tool more than once with the same arguments. Narrating "
+    "or describing a plan to call a tool is never an acceptable substitute "
+    "for actually emitting the Action/Action Input lines above."
+)
+
+
+def render_reasoning_react_system_prompt(
+    tool_descriptions: str, company_name: str = DEFAULT_COMPANY_NAME
+) -> str:
+    return REASONING_REACT_SYSTEM_TEMPLATE.format(
+        company_name=company_name,
+        current_date=date.today().isoformat(),
+        tool_descriptions=tool_descriptions,
+    )
+

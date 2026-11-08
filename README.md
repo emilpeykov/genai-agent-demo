@@ -143,19 +143,53 @@ e.g. `deepseek-r1:32b` for higher quality at the cost of more RAM/VRAM and
 latency. Reasoning models legitimately take much longer than a normal
 completion to respond — that's expected "thinking" time, not a hang.
 
-**No tool use here, on purpose.** `/chat/reasoning` is pure chat completion
-(no tools wired in), unlike `/chat/lcel/tools` or `/agent/react`. This was
-tested, not assumed: `ollama show deepseek-r1:14b` lists `tools` as a
-capability, but in practice the model does NOT reliably act on it — given a
-real `calculator` tool it ignored it and did arithmetic in its own
-"thinking" (getting it wrong), and given a `run_shell_command` tool for
+**No tool use in `/chat/reasoning`, on purpose.** It's pure chat completion
+(no tools wired in). This was tested, not assumed: `ollama show deepseek-r1:14b`
+lists `tools` as a capability, but in practice the model does NOT reliably
+act on Ollama's *native* `tools`/`tool_calls` JSON mechanism — given a real
+`calculator` tool via that mechanism it ignored it and did arithmetic in its
+own "thinking" (getting it wrong), and given a `run_shell_command` tool for
 something it genuinely couldn't know, it never emitted a real tool call at
 all — it just narrated, in prose, what running the command would
-hypothetically return, complete with a fabricated example value. Combining
-unreliable tool use with a model that's *also* producing a confident-looking
-chain-of-thought would just make wrong answers more convincing, not less —
-so this path is intentionally kept to what the model is actually reliable
-at: showing its reasoning over what it already knows.
+hypothetically return, complete with a fabricated example value.
+
+**But DeepSeek-R1 CAN reliably use tools, via a different protocol.** That
+native-mechanism failure is specific to how the model was fine-tuned, not a
+sign it can't follow instructions to use a tool. `/agent/react/reasoning`
+(via `app.reasoning_react_agent.ReasoningReActAgent`) uses the ORIGINAL
+ReAct-paper prompting style instead (predating "function calling" APIs): the
+system prompt instructs the model, in plain text, to emit
+
+```
+Action: calculator
+Action Input: {"expression": "847 * 23"}
+```
+
+which we parse ourselves with a regex, execute for real, and feed the real
+result back as an `Observation:` message. This was verified empirically to
+work reliably — live-tested against the running model:
+
+```bash
+curl -X POST http://127.0.0.1:8000/agent/react/reasoning -H "Content-Type: application/json" \
+  -d '{"prompt": "What is 847 * 23? Use the calculator tool."}'
+```
+
+```json
+{
+  "answer": "The product of 847 and 23 is 19,481.",
+  "reasoning": "... chain-of-thought ...",
+  "steps": [
+    {"tool_name": "calculator", "tool_args": {"expression": "847 * 23"}, "observation": "19481", "reasoning": "..."}
+  ],
+  "iterations": 2,
+  "model": "deepseek-r1:14b",
+  "hit_iteration_limit": false
+}
+```
+
+Note the real tool call and the *correct* answer (19,481) — a direct
+improvement over the native-mechanism test above, which silently miscalculated
+instead. Also available as a "Reasoning + tools" tab in the Gradio UI.
 
 ## Possible next steps (not implemented, good talking points)
 

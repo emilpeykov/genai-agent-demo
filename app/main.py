@@ -26,6 +26,7 @@ from app.lcel_chain import (
 )
 from app.react_agent import ReActAgent, ReActResult
 from app.reasoning import generate_with_reasoning, stream_with_reasoning
+from app.reasoning_react_agent import ReasoningReActAgent, ReasoningReActResult
 
 
 def _warm_up_vector_indexes() -> None:
@@ -93,6 +94,7 @@ app = FastAPI(
 
 _agent = Agent()
 _react_agent = ReActAgent()
+_reasoning_react_agent = ReasoningReActAgent()
 # Built once at import time -- building it just composes Runnables (cheap,
 # no network call), so there's no need to rebuild it per-request.
 _lcel_chain = build_assistant_chain()
@@ -215,6 +217,35 @@ class ReActResponse(BaseModel):
         )
 
 
+class ReasoningReActStepResponse(BaseModel):
+    tool_name: str
+    tool_args: dict
+    observation: str
+    reasoning: str
+
+
+class ReasoningReActResponse(BaseModel):
+    answer: str
+    reasoning: str = Field(
+        ..., description="The chain-of-thought behind the FINAL answer/turn."
+    )
+    steps: list[ReasoningReActStepResponse]
+    iterations: int
+    model: str
+    hit_iteration_limit: bool
+
+    @classmethod
+    def from_result(cls, result: ReasoningReActResult) -> "ReasoningReActResponse":
+        return cls(
+            answer=result.answer,
+            reasoning=result.reasoning,
+            steps=[ReasoningReActStepResponse(**s.__dict__) for s in result.steps],
+            iterations=result.iterations,
+            model=result.model,
+            hit_iteration_limit=result.hit_iteration_limit,
+        )
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -323,6 +354,23 @@ def agent_react(request: ChatRequest) -> ReActResponse:
     history = [{"role": m.role, "content": m.content} for m in request.history]
     result = _react_agent.handle(request.prompt, history=history)
     return ReActResponse.from_react_result(result)
+
+
+@app.post("/agent/react/reasoning", response_model=ReasoningReActResponse)
+def agent_react_reasoning(request: ChatRequest) -> ReasoningReActResponse:
+    """Like /agent/react, but for a REASONING model (DeepSeek-R1 by default
+    -- see ``app.config.OLLAMA_REASONING_MODEL``) via
+    ``app.reasoning_react_agent.ReasoningReActAgent``. Ollama's native
+    tool-calling JSON mechanism (used by /agent/react) is NOT reliable for
+    this model, so this endpoint uses a different, TEXT-based ReAct protocol
+    instead (the model emits plain ``Action:``/``Action Input:`` lines,
+    parsed and executed by us) -- verified empirically to work reliably.
+    See the module docstring in ``app.reasoning_react_agent`` for the exact
+    tests. Each step's chain-of-thought is included in the response so you
+    can see WHY the model decided to call (or not call) a given tool."""
+    history = [{"role": m.role, "content": m.content} for m in request.history]
+    result = _reasoning_react_agent.handle(request.prompt, history=history)
+    return ReasoningReActResponse.from_result(result)
 
 
 @app.post("/chat/reasoning", response_model=ReasoningChatResponse)
