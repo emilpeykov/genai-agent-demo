@@ -337,7 +337,16 @@ def build_app() -> gr.Blocks:
                 "Requires Ollama running locally with the model pulled "
                 "(`ollama pull deepseek-r1:14b`). Reasoning models "
                 "legitimately take much longer than a normal completion -- "
-                "that's expected, not a hang."
+                "that's expected, not a hang.\n\n"
+                "**No tools here, on purpose:** this model claims tool-calling "
+                "support, but testing showed it doesn't reliably use it -- it "
+                "either ignores a provided tool and improvises an answer "
+                "itself (sometimes wrong despite correct-looking reasoning), "
+                "or narrates what a tool call WOULD return instead of making "
+                "a real one. See `app/reasoning.py`'s module docstring for "
+                "the specific tests. This tab only shows how the model "
+                "reasons over what it already knows -- for real tool use, "
+                "see the 'LCEL chain + tools' or 'ReAct agent' tabs instead."
             )
             gr.ChatInterface(
                 fn=_chat_reasoning,

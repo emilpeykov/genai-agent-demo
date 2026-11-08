@@ -10,6 +10,21 @@ def _mock_chat_response(message: dict):
     return mock_resp
 
 
+def test_generate_with_reasoning_never_sends_tools():
+    # Regression: live-testing deepseek-r1:14b with a real `tools` payload
+    # showed it does NOT reliably use tool-calling despite Ollama listing
+    # "tools" as a capability -- it either ignored a calculator tool and
+    # miscalculated the answer itself, or narrated what a shell command would
+    # hypothetically return instead of actually calling it (never emitting a
+    # real tool_calls field). This module must stay pure chat-completion --
+    # see the module docstring for the specific tests that proved this.
+    import inspect
+
+    source = inspect.getsource(generate_with_reasoning)
+    assert '"tools"' not in source
+    assert "bind_tools" not in source
+
+
 def test_split_think_tags_extracts_reasoning_and_answer():
     content = "<think>step one, then step two</think>The final answer is 42."
     reasoning, answer = _split_think_tags(content)

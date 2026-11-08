@@ -143,6 +143,20 @@ e.g. `deepseek-r1:32b` for higher quality at the cost of more RAM/VRAM and
 latency. Reasoning models legitimately take much longer than a normal
 completion to respond — that's expected "thinking" time, not a hang.
 
+**No tool use here, on purpose.** `/chat/reasoning` is pure chat completion
+(no tools wired in), unlike `/chat/lcel/tools` or `/agent/react`. This was
+tested, not assumed: `ollama show deepseek-r1:14b` lists `tools` as a
+capability, but in practice the model does NOT reliably act on it — given a
+real `calculator` tool it ignored it and did arithmetic in its own
+"thinking" (getting it wrong), and given a `run_shell_command` tool for
+something it genuinely couldn't know, it never emitted a real tool call at
+all — it just narrated, in prose, what running the command would
+hypothetically return, complete with a fabricated example value. Combining
+unreliable tool use with a model that's *also* producing a confident-looking
+chain-of-thought would just make wrong answers more convincing, not less —
+so this path is intentionally kept to what the model is actually reliable
+at: showing its reasoning over what it already knows.
+
 ## Possible next steps (not implemented, good talking points)
 
 - Swap the heuristic complexity classifier for a small fine-tuned/few-shot

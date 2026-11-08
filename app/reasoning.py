@@ -17,6 +17,25 @@ cleanly split from ``message.content`` (the final answer). Older Ollama
 versions / some models instead inline the reasoning as a literal
 ``<think>...</think>`` block inside ``message.content`` -- ``_split_think_tags``
 is a fallback for that case, so this module behaves consistently either way.
+
+Deliberately NOT tool-calling: ``ollama show deepseek-r1:14b`` lists "tools"
+as a capability (meaning it recognizes the tool-calling JSON schema), but
+empirically it does NOT reliably use that capability. Sending this model a
+real ``calculator`` tool for simple arithmetic, it ignored the tool entirely
+and did the math in its own "thinking" instead (getting it WRONG -- its
+chain-of-thought computed the correct result, but its final answer then
+hallucinated a different, incorrect number). Sending it a ``run_shell_command``
+tool for something it genuinely could not know (the real working directory),
+it never emitted a real ``tool_calls`` field at all -- it just narrated, in
+prose, what running the command would hypothetically look like, complete
+with a fabricated example path, instead of actually invoking the tool. This
+is the same "narrate instead of act" failure mode already fixed for
+``devstral:24b``'s tool-calling chain in ``app.lcel_chain`` -- except worse
+here, since this model never attempts a structured tool call at all. So this
+module stays pure chat-completion (no ``tools`` in the request): combining
+unreliable tool use with a reasoning model would just produce confidently
+wrong answers dressed up with a plausible-looking (but fabricated) chain of
+thought, which is worse than no tool use at all.
 """
 from __future__ import annotations
 
