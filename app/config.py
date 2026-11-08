@@ -70,6 +70,19 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 LLM_BACKEND = os.getenv("LLM_BACKEND", "mock").lower()
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
+# A dedicated REASONING model, deliberately kept separate from MODEL_CATALOG's
+# fast/balanced/powerful cost-tier routing table above: reasoning models
+# (DeepSeek-R1, QwQ, o1-style models) aren't just "a bigger/slower model in
+# the same family" -- they're trained to emit a visible chain-of-thought
+# ("thinking") BEFORE their final answer, which is a genuinely different
+# capability worth demonstrating on its own, not something that fits the
+# cost/latency tier framing above. Defaults to deepseek-r1:14b (a good
+# middle ground for a single consumer GPU/Apple Silicon machine -- the 32b
+# variant is also supported by setting this env var, but needs considerably
+# more RAM/VRAM headroom alongside any other already-loaded models).
+OLLAMA_REASONING_MODEL = os.getenv("OLLAMA_REASONING_MODEL", "deepseek-r1:14b")
+
+
 # Optional: connection string for a Postgres instance with the pgvector
 # extension installed, e.g. "postgresql://user:pass@localhost:5432/mydb".
 # Only used by app.postgres_rag -- unset (None) means that tool will report

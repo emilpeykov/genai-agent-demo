@@ -24,6 +24,7 @@ from app.lcel_chain import (
     build_tool_calling_chain_with_memory,
 )
 from app.react_agent import ReActAgent
+from app.reasoning import generate_with_reasoning
 
 _rule_based_agent = Agent()
 _react_agent = ReActAgent()
@@ -178,6 +179,22 @@ def _chat_lcel_tools_memory_stream(message: str, history: list, session_id: str)
         yield partial
 
 
+def _chat_reasoning(message: str, history: list) -> str:
+    # Stateless, like /chat/reasoning. Requires Ollama running locally with
+    # a reasoning-capable model pulled (default: deepseek-r1:14b -- see
+    # app.config.OLLAMA_REASONING_MODEL). Renders the chain-of-thought in a
+    # collapsed <details> block ABOVE the final answer, so you can inspect
+    # "how" the model got there without it cluttering the main reply.
+    result = generate_with_reasoning(message)
+    reasoning_md = (
+        f"<details><summary>🤔 Show reasoning ({result.latency_ms} ms, "
+        f"model: {result.model})</summary>\n\n{result.reasoning}\n\n</details>\n\n"
+        if result.reasoning
+        else ""
+    )
+    return reasoning_md + result.answer
+
+
 def build_app() -> gr.Blocks:
     with gr.Blocks(title="GenAI Agent Demo") as demo:
         gr.Markdown(
@@ -306,6 +323,29 @@ def build_app() -> gr.Blocks:
                 examples=[
                     ["My name is Ada. Remember that.", None],
                     ["What is my name?", None],
+                ],
+            )
+        with gr.Tab("Reasoning model (/chat/reasoning)"):
+            gr.Markdown(
+                "Dedicated REASONING-model path (DeepSeek-R1 by default -- "
+                "see `app.config.OLLAMA_REASONING_MODEL`), separate from the "
+                "fast/balanced/powerful cost-tier routing used elsewhere in "
+                "this demo. Unlike every other tab, this model emits a "
+                "visible chain-of-thought BEFORE its final answer -- shown "
+                "here in a collapsible '🤔 Show reasoning' section above the "
+                "answer, via `app.reasoning.generate_with_reasoning`. "
+                "Requires Ollama running locally with the model pulled "
+                "(`ollama pull deepseek-r1:14b`). Reasoning models "
+                "legitimately take much longer than a normal completion -- "
+                "that's expected, not a hang."
+            )
+            gr.ChatInterface(
+                fn=_chat_reasoning,
+                examples=[
+                    "If a train leaves at 3pm going 60mph and another leaves "
+                    "an hour later going 80mph on the same route, when does "
+                    "the second train catch up?",
+                    "Is 1009 a prime number? Show your reasoning.",
                 ],
             )
     return demo

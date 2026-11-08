@@ -19,6 +19,7 @@ Engineer job posting:
 | Python, API development | `app/main.py` (FastAPI service, typed request/response models) |
 | Git, unit testing, CI/CD | `tests/` (pytest suite), `.github/workflows/ci.yml` (GitHub Actions) |
 | Data disciplines (MLOps-adjacent) | Structured telemetry per request: model, tier, latency, cost, retries |
+| Reasoning-model chain-of-thought | `app/reasoning.py` (DeepSeek-R1 via Ollama, `/chat/reasoning`) |
 
 ## Architecture
 
@@ -100,6 +101,47 @@ pytest -v
 2. Set `OPENAI_API_KEY` in `.env`.
 3. The app automatically switches to `OpenAIChatProvider` — no code changes
    needed, since both providers implement the same `LLMProvider` interface.
+
+## Reasoning model (DeepSeek-R1 via Ollama)
+
+Besides the fast/balanced/powerful cost-tier routing above, the app also
+exposes a dedicated path for **reasoning models** — local models (e.g.
+DeepSeek-R1, QwQ) trained to emit a visible chain-of-thought *before* their
+final answer, instead of jumping straight to a response. This is a
+genuinely different, inspectable capability (useful for debugging *why* a
+model reached a conclusion, or building "show your work" UIs), not just a
+bigger/slower model in the same family — so it's deliberately kept separate
+from `MODEL_CATALOG` in `app/config.py`.
+
+```bash
+ollama pull deepseek-r1:14b   # ~9 GB; use :32b instead if you have the RAM/VRAM
+```
+
+```bash
+LLM_BACKEND=ollama uvicorn app.main:app --reload
+curl -X POST http://127.0.0.1:8000/chat/reasoning -H "Content-Type: application/json" \
+  -d '{"prompt": "Is 1009 a prime number? Show your reasoning."}'
+```
+
+```json
+{
+  "reasoning": "1009 is odd, not divisible by 3, 7, 11, 13... up to sqrt(1009)≈31.8, so check primes up to 31 ...",
+  "answer": "Yes, 1009 is a prime number.",
+  "model": "deepseek-r1:14b",
+  "latency_ms": 8421
+}
+```
+
+A streaming NDJSON variant is available at `/chat/reasoning/stream` (each
+line is `{"kind": "reasoning"|"answer", "text": "..."}`), and both are also
+available as a "Reasoning model" tab in the Gradio UI
+(`python -m app.gradio_app`), rendering the chain-of-thought in a collapsible
+section above the final answer.
+
+Set `OLLAMA_REASONING_MODEL` (see `.env.example`) to use a different model,
+e.g. `deepseek-r1:32b` for higher quality at the cost of more RAM/VRAM and
+latency. Reasoning models legitimately take much longer than a normal
+completion to respond — that's expected "thinking" time, not a hang.
 
 ## Possible next steps (not implemented, good talking points)
 

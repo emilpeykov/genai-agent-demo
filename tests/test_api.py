@@ -160,3 +160,48 @@ def test_chat_lcel_tools_memory_stream_endpoint_passes_through_session_id(monkey
     assert response.text == "fake memory stream for: My name is Ada."
     assert fake_chain.calls[0][1] == {"configurable": {"session_id": "test-session-xyz"}}
 
+
+def test_chat_reasoning_endpoint_returns_reasoning_and_answer(monkeypatch):
+    from app.reasoning import ReasoningResult
+
+    def _fake_generate_with_reasoning(prompt: str):
+        return ReasoningResult(
+            reasoning=f"thinking about: {prompt}",
+            answer="42",
+            model="deepseek-r1:14b",
+            latency_ms=123,
+        )
+
+    monkeypatch.setattr(main_module, "generate_with_reasoning", _fake_generate_with_reasoning)
+
+    response = client.post("/chat/reasoning", json={"prompt": "What is 6*7?"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["reasoning"] == "thinking about: What is 6*7?"
+    assert body["answer"] == "42"
+    assert body["model"] == "deepseek-r1:14b"
+    assert body["latency_ms"] == 123
+
+
+def test_chat_reasoning_stream_endpoint_streams_ndjson(monkeypatch):
+    def _fake_stream_with_reasoning(prompt: str):
+        yield "reasoning", "first, I "
+        yield "reasoning", "think about it."
+        yield "answer", "The answer is 42."
+
+    monkeypatch.setattr(main_module, "stream_with_reasoning", _fake_stream_with_reasoning)
+
+    response = client.post("/chat/reasoning/stream", json={"prompt": "What is 6*7?"})
+
+    assert response.status_code == 200
+    lines = [line for line in response.text.splitlines() if line]
+    parsed = [main_module.json.loads(line) for line in lines]
+    assert parsed == [
+        {"kind": "reasoning", "text": "first, I "},
+        {"kind": "reasoning", "text": "think about it."},
+        {"kind": "answer", "text": "The answer is 42."},
+    ]
+
+
+

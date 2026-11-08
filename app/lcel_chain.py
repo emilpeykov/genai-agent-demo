@@ -214,6 +214,56 @@ MAX_TOOL_ROUNDS = 5  # matches ReActAgent.MAX_ITERATIONS -- a hard cap
 # (pwd -> list_directory -> readme_search -> run_shell_command), so 3 was too
 # tight and caused the round cap to be hit mid-task.)
 
+# Regression: prompt guidance alone is NOT a reliable guarantee -- it's a
+# probabilistic nudge, not a hard constraint, especially for a local model
+# like devstral:24b. Even with explicit "never describe a plan without
+# acting" instructions in the system prompt, the model was observed writing
+# a whole narrated plan ("I'll run this now...", "Let's proceed with
+# executing these steps...") and then stopping with NO tool call at all --
+# so nothing was ever actually executed. This backs the prompt up with a
+# CODE-level corrective retry: if a round produces no tool call AND its text
+# looks like an unfulfilled promise to act, nudge the model ONCE with an
+# explicit "you didn't actually call anything -- do it now" follow-up and
+# give it one more round, instead of silently accepting the narration as the
+# final answer.
+_NARRATION_WITHOUT_ACTION_MARKERS = (
+    "i'll run",
+    "i will run",
+    "let's proceed",
+    "lets proceed",
+    "i'll execute",
+    "i will execute",
+    "let me run",
+    "let me execute",
+    "i'll start by",
+    "i will start by",
+    "we'll proceed",
+    "i will now",
+    "let's execute",
+    "i'm going to run",
+    "i am going to run",
+    "i'll go ahead and run",
+    "i will go ahead and run",
+)
+
+_NUDGE_MESSAGE = (
+    "You described taking an action (e.g. running or executing something) but "
+    "did not actually call a tool -- nothing was really executed. If a tool "
+    "call is needed to fulfil the request, call it now through the real "
+    "tool-calling mechanism instead of describing it again. If no tool is "
+    "actually needed, just answer the original question directly."
+)
+
+
+def _looks_like_unfulfilled_action_promise(text: str) -> bool:
+    """Heuristic: does ``text`` read like the model PROMISED to take an
+    action (run/execute/proceed) without a real tool call accompanying it?
+    Used as a corrective safety net alongside (not instead of) prompt
+    guidance -- see the comment on ``_NARRATION_WITHOUT_ACTION_MARKERS``.
+    """
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in _NARRATION_WITHOUT_ACTION_MARKERS)
+
 
 def _run_tool_calling_loop(
     llm_with_tools: Runnable,
@@ -245,6 +295,7 @@ def _run_tool_calling_loop(
         + [HumanMessage(content=user_request)]
     )
     last_ai_message: AIMessage | None = None
+    nudged = False
 
     for _ in range(MAX_TOOL_ROUNDS):
         ai_message = llm_with_tools.invoke(messages)
@@ -252,6 +303,10 @@ def _run_tool_calling_loop(
         messages.append(ai_message)
 
         if not ai_message.tool_calls:
+            if not nudged and _looks_like_unfulfilled_action_promise(ai_message.content):
+                nudged = True
+                messages.append(HumanMessage(content=_NUDGE_MESSAGE))
+                continue
             return ai_message.content
 
         for call in ai_message.tool_calls:
@@ -352,6 +407,7 @@ def _stream_tool_calling_loop(
         + list(chat_history or [])
         + [HumanMessage(content=user_request)]
     )
+    nudged = False
 
     for _ in range(MAX_TOOL_ROUNDS):
         full: AIMessage | None = None
@@ -365,6 +421,17 @@ def _stream_tool_calling_loop(
         messages.append(full)
 
         if not full.tool_calls:
+            # Regression: prompt guidance alone isn't a reliable guarantee --
+            # a model can narrate an unfulfilled promise to act ("I'll run
+            # this now...") with NO real tool call at all. The narration text
+            # is already streamed above (can't be un-sent), but rather than
+            # stopping there, nudge the model ONCE to actually act -- the
+            # real tool-call round (if any) will stream its own answer right
+            # after what the user already saw.
+            if not nudged and _looks_like_unfulfilled_action_promise(full.content):
+                nudged = True
+                messages.append(HumanMessage(content=_NUDGE_MESSAGE))
+                continue
             return  # that was the final answer -- already streamed above
 
         for call in full.tool_calls:

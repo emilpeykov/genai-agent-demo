@@ -6,6 +6,7 @@ surface routing/cost/latency metadata (useful for dashboards and debugging).
 """
 from __future__ import annotations
 
+import json
 import os
 import threading
 from contextlib import asynccontextmanager
@@ -24,6 +25,7 @@ from app.lcel_chain import (
     build_tool_calling_chain_with_memory,
 )
 from app.react_agent import ReActAgent, ReActResult
+from app.reasoning import generate_with_reasoning, stream_with_reasoning
 
 
 def _warm_up_vector_indexes() -> None:
@@ -180,6 +182,15 @@ class LcelChatResponse(BaseModel):
     answer: str
 
 
+class ReasoningChatResponse(BaseModel):
+    reasoning: str = Field(
+        ..., description="The model's chain-of-thought, shown separately from its final answer."
+    )
+    answer: str
+    model: str
+    latency_ms: int
+
+
 class ReActStepResponse(BaseModel):
     tool_name: str
     tool_args: dict
@@ -312,3 +323,39 @@ def agent_react(request: ChatRequest) -> ReActResponse:
     history = [{"role": m.role, "content": m.content} for m in request.history]
     result = _react_agent.handle(request.prompt, history=history)
     return ReActResponse.from_react_result(result)
+
+
+@app.post("/chat/reasoning", response_model=ReasoningChatResponse)
+def chat_reasoning(request: ChatRequest) -> ReasoningChatResponse:
+    """A dedicated REASONING-model path (DeepSeek-R1 by default -- see
+    ``app.config.OLLAMA_REASONING_MODEL``), separate from the fast/balanced/
+    powerful cost-tier routing used by /chat. Returns the model's visible
+    chain-of-thought (``reasoning``) SEPARATELY from its final answer, via
+    ``app.reasoning.generate_with_reasoning``. Requires Ollama running
+    locally with a reasoning-capable model pulled (e.g.
+    ``ollama pull deepseek-r1:14b``). Reasoning models can legitimately take
+    much longer than a normal completion -- that's expected, not a hang."""
+    result = generate_with_reasoning(request.prompt)
+    return ReasoningChatResponse(
+        reasoning=result.reasoning,
+        answer=result.answer,
+        model=result.model,
+        latency_ms=result.latency_ms,
+    )
+
+
+@app.post("/chat/reasoning/stream")
+def chat_reasoning_stream(request: ChatRequest) -> StreamingResponse:
+    """Streaming counterpart to /chat/reasoning. Each line of the response
+    body is a small JSON object ``{"kind": "reasoning"|"answer", "text": ...}``
+    (JSON Lines / NDJSON) so the client can render the chain-of-thought and
+    the final answer in separate UI areas AS THEY STREAM IN, instead of only
+    being able to tell them apart after the whole response is done."""
+
+    def _generate():
+        for kind, text in stream_with_reasoning(request.prompt):
+            yield json.dumps({"kind": kind, "text": text}) + "\n"
+
+    return StreamingResponse(_generate(), media_type="application/x-ndjson")
+
+
