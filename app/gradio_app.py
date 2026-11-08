@@ -25,11 +25,13 @@ from app.lcel_chain import (
 )
 from app.react_agent import ReActAgent
 from app.reasoning import generate_with_reasoning
+from app.reasoning_langgraph_agent import ReasoningLangGraphAgent
 from app.reasoning_react_agent import ReasoningReActAgent
 
 _rule_based_agent = Agent()
 _react_agent = ReActAgent()
 _reasoning_react_agent = ReasoningReActAgent()
+_reasoning_langgraph_agent = ReasoningLangGraphAgent()
 _lcel_chain = build_assistant_chain()
 _lcel_chain_streaming = build_assistant_chain_streaming()
 # Not built eagerly -- see app.main for why (requires Ollama to actually use).
@@ -197,13 +199,10 @@ def _chat_reasoning(message: str, history: list) -> str:
     return reasoning_md + result.answer
 
 
-def _chat_reasoning_react(message: str, history: list) -> str:
-    # Like /agent/react, but for the reasoning model via a text-based ReAct
-    # protocol instead of Ollama's native (unreliable, for this model)
-    # tool_calls mechanism -- see app.reasoning_react_agent's module
-    # docstring. Stateless w.r.t. conversation history, same as _chat_react.
-    conversation_history = _clean_history_for_model(history)
-    result = _reasoning_react_agent.handle(message, history=conversation_history)
+def _render_reasoning_react_result(result) -> str:
+    """Shared rendering for both app.reasoning_react_agent.ReasoningReActAgent
+    and app.reasoning_langgraph_agent.ReasoningLangGraphAgent -- they return
+    the same ReasoningReActResult shape, so the UI presentation is identical."""
     if result.steps:
         steps_md = "\n".join(
             f"{i}. `{s.tool_name}({s.tool_args})` -> {s.observation[:200]}"
@@ -221,6 +220,25 @@ def _chat_reasoning_react(message: str, history: list) -> str:
         f"hit iteration limit: {result.hit_iteration_limit}*\n\n**Tool calls:**\n{steps_md}"
     )
     return reasoning_md + result.answer + meta
+
+
+def _chat_reasoning_react(message: str, history: list) -> str:
+    # Like /agent/react, but for the reasoning model via a text-based ReAct
+    # protocol instead of Ollama's native (unreliable, for this model)
+    # tool_calls mechanism -- see app.reasoning_react_agent's module
+    # docstring. Stateless w.r.t. conversation history, same as _chat_react.
+    conversation_history = _clean_history_for_model(history)
+    result = _reasoning_react_agent.handle(message, history=conversation_history)
+    return _render_reasoning_react_result(result)
+
+
+def _chat_reasoning_langgraph(message: str, history: list) -> str:
+    # Same task/response shape as _chat_reasoning_react, but orchestrated as
+    # an explicit LangGraph self-correcting cycle instead of a plain Python
+    # loop -- see app.reasoning_langgraph_agent's module docstring.
+    conversation_history = _clean_history_for_model(history)
+    result = _reasoning_langgraph_agent.handle(message, history=conversation_history)
+    return _render_reasoning_react_result(result)
 
 
 def build_app() -> gr.Blocks:
@@ -417,6 +435,27 @@ def build_app() -> gr.Blocks:
                 examples=[
                     "What is 23 times 17? Use the calculator tool.",
                     "Count the .py files in the current directory tree.",
+                    "How much memory is this machine using right now?",
+                ],
+            )
+        with gr.Tab("Reasoning + tools, LangGraph (/agent/react/reasoning/langgraph)"):
+            gr.Markdown(
+                "Same task, model, and text-based `Action:`/`Action Input:` "
+                "protocol as the 'Reasoning + tools' tab, but orchestrated "
+                "as an explicit LangGraph `StateGraph` via "
+                "`app.reasoning_langgraph_agent.ReasoningLangGraphAgent` "
+                "instead of a plain Python loop. The practical difference: "
+                "a genuinely MALFORMED tool call (invalid JSON in Action "
+                "Input) is caught by a conditional graph edge that routes "
+                "back to the model with the real parse error as feedback -- "
+                "an explicit self-correction CYCLE, which LangGraph "
+                "supports natively (unlike a straight-line LCEL chain). "
+                "See the module docstring for the graph shape."
+            )
+            gr.ChatInterface(
+                fn=_chat_reasoning_langgraph,
+                examples=[
+                    "What is 23 times 17? Use the calculator tool.",
                     "How much memory is this machine using right now?",
                 ],
             )

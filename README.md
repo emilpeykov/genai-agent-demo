@@ -191,6 +191,20 @@ Note the real tool call and the *correct* answer (19,481) — a direct
 improvement over the native-mechanism test above, which silently miscalculated
 instead. Also available as a "Reasoning + tools" tab in the Gradio UI.
 
+**Same thing, orchestrated with LangGraph instead of a `for` loop.**
+`/agent/react/reasoning/langgraph` (via
+`app.reasoning_langgraph_agent.ReasoningLangGraphAgent`) is the exact same
+model, system prompt, and text-based `Action:`/`Action Input:` protocol —
+but as an explicit LangGraph `StateGraph` with a dedicated
+**self-correction edge**: a genuinely malformed tool call (invalid JSON in
+Action Input) is caught by a conditional edge that routes back to the
+model with the *real* `json.JSONDecodeError` message as feedback, instead
+of silently falling back to empty args. Reasoning models like DeepSeek-R1
+often need exactly this kind of retry — a straight-line pipeline has
+nowhere for a parse failure to go but raise or degrade; LangGraph's graph
+supports the cycle natively. Also available as a "Reasoning + tools,
+LangGraph" tab in the Gradio UI.
+
 ## Possible next steps (not implemented, good talking points)
 
 - Swap the heuristic complexity classifier for a small fine-tuned/few-shot

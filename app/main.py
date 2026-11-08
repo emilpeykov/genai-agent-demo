@@ -26,6 +26,7 @@ from app.lcel_chain import (
 )
 from app.react_agent import ReActAgent, ReActResult
 from app.reasoning import generate_with_reasoning, stream_with_reasoning
+from app.reasoning_langgraph_agent import ReasoningLangGraphAgent
 from app.reasoning_react_agent import ReasoningReActAgent, ReasoningReActResult
 
 
@@ -95,6 +96,7 @@ app = FastAPI(
 _agent = Agent()
 _react_agent = ReActAgent()
 _reasoning_react_agent = ReasoningReActAgent()
+_reasoning_langgraph_agent = ReasoningLangGraphAgent()
 # Built once at import time -- building it just composes Runnables (cheap,
 # no network call), so there's no need to rebuild it per-request.
 _lcel_chain = build_assistant_chain()
@@ -370,6 +372,23 @@ def agent_react_reasoning(request: ChatRequest) -> ReasoningReActResponse:
     can see WHY the model decided to call (or not call) a given tool."""
     history = [{"role": m.role, "content": m.content} for m in request.history]
     result = _reasoning_react_agent.handle(request.prompt, history=history)
+    return ReasoningReActResponse.from_result(result)
+
+
+@app.post("/agent/react/reasoning/langgraph", response_model=ReasoningReActResponse)
+def agent_react_reasoning_langgraph(request: ChatRequest) -> ReasoningReActResponse:
+    """Same task and response shape as /agent/react/reasoning (same system
+    prompt, tools, and text-based Action/Action Input protocol), but
+    orchestrated as an explicit LangGraph ``StateGraph`` via
+    ``app.reasoning_langgraph_agent.ReasoningLangGraphAgent`` instead of a
+    plain Python for-loop. The key difference: a genuinely malformed tool
+    call (invalid JSON in Action Input) is caught by a conditional graph
+    edge that routes back to the model with the REAL parse error as
+    feedback -- an explicit self-correction cycle, instead of folding retry
+    logic into one long method. See that module's docstring for the graph
+    shape and rationale."""
+    history = [{"role": m.role, "content": m.content} for m in request.history]
+    result = _reasoning_langgraph_agent.handle(request.prompt, history=history)
     return ReasoningReActResponse.from_result(result)
 
 
