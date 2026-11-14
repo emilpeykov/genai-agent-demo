@@ -274,3 +274,103 @@ def test_includes_prior_history_in_the_model_request(mock_post):
     assert sent_messages[2] == history[1]
     assert sent_messages[3] == {"role": "user", "content": "and what is the root directory?"}
 
+
+@patch("app.reasoning_react_agent.httpx.post")
+def test_appends_escalation_hint_onto_thin_search_observation(mock_post):
+    # Same deterministic search-escalation behavior as the native
+    # tool-calling agents, ported to this text-protocol (Action/Action
+    # Input/Observation) loop -- appended onto the SAME "Observation: ..."
+    # user message, since this protocol has no separate "tool" role.
+    mock_post.side_effect = [
+        _mock_chat_response(
+            {
+                "role": "assistant",
+                "content": 'Action: web_search\nAction Input: {"query": "OpenKBS"}',
+                "thinking": "",
+            }
+        ),
+        _mock_chat_response(
+            {"role": "assistant", "content": "Final Answer: I couldn't find much.", "thinking": ""}
+        ),
+    ]
+
+    with patch("app.reasoning_react_agent._TOOLS_BY_NAME") as mock_tools:
+        mock_tool = MagicMock()
+        mock_tool.invoke.return_value = "No web search results found for 'OpenKBS'."
+        mock_tools.get.side_effect = lambda name: mock_tool
+
+        agent = ReasoningReActAgent(model="test-model")
+        agent.handle("Tell me about OpenKBS")
+
+    second_call_messages = mock_post.call_args_list[1].kwargs["json"]["messages"]
+    observation_message = next(
+        m["content"] for m in second_call_messages if m["content"].startswith("Observation:")
+    )
+    assert "SEARCH ESCALATION REMINDER" in observation_message
+    assert "google_search" in observation_message
+
+
+@patch("app.reasoning_react_agent.httpx.post")
+def test_appends_relevance_check_onto_a_non_thin_search_observation(mock_post):
+    # A non-empty, non-error search result is NOT automatically trusted --
+    # the model must be asked, in the SAME Observation message (no separate
+    # "tool" role in this protocol), to judge accuracy/relevance itself.
+    mock_post.side_effect = [
+        _mock_chat_response(
+            {
+                "role": "assistant",
+                "content": (
+                    'Action: wikipedia_search\n'
+                    'Action Input: {"query": "OpenKBS agentic services"}'
+                ),
+                "thinking": "",
+            }
+        ),
+        _mock_chat_response(
+            {"role": "assistant", "content": "Final Answer: Here's what I found.", "thinking": ""}
+        ),
+    ]
+
+    with patch("app.reasoning_react_agent._TOOLS_BY_NAME") as mock_tools:
+        mock_tool = MagicMock()
+        mock_tool.invoke.return_value = (
+            "Seol In-ah is a South Korean actress known for several TV dramas."
+        )
+        mock_tools.get.side_effect = lambda name: mock_tool
+
+        agent = ReasoningReActAgent(model="test-model")
+        agent.handle("Does OpenKBS offer agentic services?")
+
+    second_call_messages = mock_post.call_args_list[1].kwargs["json"]["messages"]
+    observation_message = next(
+        m["content"] for m in second_call_messages if m["content"].startswith("Observation:")
+    )
+    assert "SEARCH RESULT CHECK" in observation_message
+    assert "OpenKBS agentic services" in observation_message
+
+
+@patch("app.reasoning_react_agent.httpx.post")
+def test_stops_immediately_on_ask_user(mock_post):
+    # 'ask_user' must deterministically stop the WHOLE loop right there --
+    # the question becomes this turn's "answer" and awaiting_user_input is
+    # set, rather than replaying the observation back to the model for
+    # another round it has no real reply to give yet.
+    mock_post.side_effect = [
+        _mock_chat_response(
+            {
+                "role": "assistant",
+                "content": 'Action: ask_user\nAction Input: {"question": "Which file do you mean?"}',
+                "thinking": "I need to clarify which file before proceeding.",
+            }
+        ),
+    ]
+
+    agent = ReasoningReActAgent(model="test-model")
+    result = agent.handle("edit the config file")
+
+    assert result.answer == "Which file do you mean?"
+    assert result.awaiting_user_input is True
+    assert len(result.steps) == 1
+    assert result.steps[0].tool_name == "ask_user"
+    assert mock_post.call_count == 1
+

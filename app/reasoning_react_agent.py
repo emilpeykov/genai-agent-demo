@@ -73,6 +73,13 @@ import httpx
 
 from app.config import OLLAMA_BASE_URL, OLLAMA_REASONING_MODEL
 from app.prompts import DEFAULT_COMPANY_NAME, render_reasoning_react_system_prompt
+from app.react_agent import (
+    ASK_USER_TOOL_NAME,
+    SEARCH_TOOL_NAMES,
+    is_thin_search_result,
+    search_escalation_hint,
+    search_relevance_hint,
+)
 from app.tools import AVAILABLE_TOOLS
 
 MAX_ITERATIONS = 5  # same hard cap as app.react_agent.ReActAgent
@@ -96,12 +103,25 @@ _FINAL_ANSWER_RE = re.compile(r"Final Answer:\s*(?P<answer>.*)", re.DOTALL)
 def _build_tool_descriptions() -> str:
     """Render AVAILABLE_TOOLS as a plain-text list the model can read,
     since (unlike the native tool_calls path) this protocol doesn't pass a
-    structured JSON schema -- the model only ever sees this text block."""
+    structured JSON schema -- the model only ever sees this text block.
+
+    BUG FIX (observed failure): this used to keep only the FIRST line of
+    each tool's docstring. app.react_agent.ReActAgent's native tool-calling
+    path sends the FULL docstring as the JSON schema "description" field
+    (see _build_tool_schemas below), which for file_search/list_directory
+    includes an explicit "do NOT invent a literal path like 'project_dir'
+    from wording such as 'the project dir'" warning. Truncating to one line
+    here silently dropped exactly that warning for THIS protocol -- the one
+    used specifically because this model's native tool_calls are unreliable
+    -- which plausibly contributed to the model guessing dir_path="project_dir"
+    for "the project dir" in live testing. Now the full (whitespace-
+    collapsed) docstring is kept so both agent paths see the same guidance.
+    """
     lines = []
     for t in AVAILABLE_TOOLS:
         arg_names = ", ".join(t.args.keys()) if t.args else ""
-        first_line = (t.description or "").strip().splitlines()[0] if t.description else ""
-        lines.append(f"- {t.name}({arg_names}): {first_line}")
+        description = " ".join((t.description or "").split())
+        lines.append(f"- {t.name}({arg_names}): {description}")
     return "\n".join(lines)
 
 
@@ -121,6 +141,10 @@ class ReasoningReActResult:
     iterations: int = 0
     model: str = ""
     hit_iteration_limit: bool = False
+    # See app.react_agent.ReActResult.awaiting_user_input's docstring --
+    # same meaning here: ``answer`` is a QUESTION for the real user, not a
+    # genuine final answer, when this is True.
+    awaiting_user_input: bool = False
 
 
 class ReasoningReActAgent:
@@ -164,6 +188,7 @@ class ReasoningReActAgent:
             messages.extend(history)
         messages.append({"role": "user", "content": prompt})
         steps: list[ReasoningReActStep] = []
+        tried_search_tools: set[str] = set()
 
         for iteration in range(1, MAX_ITERATIONS + 1):
             data = self._call_model(messages)
@@ -226,6 +251,22 @@ class ReasoningReActAgent:
                         reasoning=thinking,
                     )
                 )
+
+                # Human-in-the-loop short-circuit -- see ASK_USER_TOOL_NAME's
+                # comment in app.react_agent / app.tools.ask_user's
+                # docstring. Stop the loop immediately and surface the
+                # question as this turn's "answer" instead of replaying it
+                # back to the model for another round it has no reply to.
+                if name == ASK_USER_TOOL_NAME:
+                    return ReasoningReActResult(
+                        answer=args.get("question", observation),
+                        reasoning=thinking,
+                        steps=steps,
+                        iterations=iteration,
+                        model=self._model,
+                        awaiting_user_input=True,
+                    )
+
                 # Only replay the model's own text up to (and including) the
                 # Action Input line -- never anything past it, in case the
                 # stop sequence didn't fire for some reason -- so the model
@@ -233,7 +274,23 @@ class ReasoningReActAgent:
                 messages.append(
                     {"role": "assistant", "content": content[: action_match.end()]}
                 )
-                messages.append({"role": "user", "content": f"Observation: {observation}"})
+                observation_text = f"Observation: {observation}"
+                # Deterministic search-escalation nudge -- see
+                # app.react_agent.search_escalation_hint's/
+                # search_relevance_hint's docstrings. This protocol has no
+                # separate "tool" role, so the reminder is appended straight
+                # onto the same Observation user message.
+                if name in SEARCH_TOOL_NAMES:
+                    tried_search_tools.add(name)
+                    if is_thin_search_result(observation):
+                        hint = search_escalation_hint(name, tried_search_tools)
+                    else:
+                        hint = search_relevance_hint(
+                            name, args.get("query", ""), tried_search_tools
+                        )
+                    if hint:
+                        observation_text += "\n\n" + hint["content"]
+                messages.append({"role": "user", "content": observation_text})
                 continue
 
             final_match = _FINAL_ANSWER_RE.search(content)

@@ -10,6 +10,18 @@ import os
 from dataclasses import dataclass
 from typing import Literal
 
+# BUG FIX (discovered while wiring up SERPER_API_KEY): this project ships a
+# '.env' file and lists 'python-dotenv' as a dependency, but nothing ever
+# actually called ``load_dotenv()`` anywhere in the codebase -- so every
+# value in '.env' was silently inert; only REAL shell-exported environment
+# variables ever took effect. ``load_dotenv()`` populates ``os.environ`` from
+# '.env' (without overriding any var already set in the real environment, so
+# a real export still wins), and must run here, before any ``os.getenv(...)``
+# call below. Safe to call even if no '.env' file exists (a no-op then).
+from dotenv import load_dotenv
+
+load_dotenv()
+
 ModelTier = Literal["fast", "balanced", "powerful"]
 
 
@@ -64,6 +76,12 @@ REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "8"))
 MAX_RETRIES_PER_TIER = int(os.getenv("MAX_RETRIES_PER_TIER", "2"))
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# Optional: API key for Serper.dev (https://serper.dev, free tier available),
+# a thin proxy in front of real Google Search results. Only used by
+# app.tools.google_search -- unset (None) means that tool reports itself
+# unavailable rather than failing with a confusing auth error.
+SERPER_API_KEY = os.getenv("SERPER_API_KEY")
 
 # Which provider backend to use: "mock" (default, offline/free), "ollama"
 # (local models via Ollama), or "openai" (real cloud API, needs OPENAI_API_KEY).

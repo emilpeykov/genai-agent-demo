@@ -204,6 +204,68 @@ def test_chat_reasoning_stream_endpoint_streams_ndjson(monkeypatch):
     ]
 
 
+def test_agent_react_endpoint_returns_steps(monkeypatch):
+    from app.react_agent import ReActResult, ReActStep
+
+    def _fake_handle(prompt: str, history=None, known_files=None, thread_id=None):
+        return ReActResult(
+            answer="84",
+            steps=[
+                ReActStep(
+                    tool_name="calculator",
+                    tool_args={"expression": "12 * 7"},
+                    observation="84",
+                )
+            ],
+            iterations=2,
+            model="llama3.1:8b",
+            hit_iteration_limit=False,
+        )
+
+    monkeypatch.setattr(main_module._react_langgraph_agent, "handle", _fake_handle)
+
+    response = client.post("/agent/react", json={"prompt": "What's 12 times 7?"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["answer"] == "84"
+    assert body["steps"][0]["tool_name"] == "calculator"
+    assert body["model"] == "llama3.1:8b"
+
+
+def test_agent_react_endpoint_passes_through_thread_id(monkeypatch):
+    from app.react_agent import ReActResult
+
+    captured = {}
+
+    def _fake_handle(prompt: str, history=None, known_files=None, thread_id=None):
+        captured["thread_id"] = thread_id
+        return ReActResult(answer="ok", model="llama3.1:8b")
+
+    monkeypatch.setattr(main_module._react_langgraph_agent, "handle", _fake_handle)
+
+    response = client.post(
+        "/agent/react", json={"prompt": "hi", "thread_id": "session-abc"}
+    )
+
+    assert response.status_code == 200
+    assert captured["thread_id"] == "session-abc"
+
+
+def test_agent_react_langgraph_alias_delegates_to_same_agent(monkeypatch):
+    from app.react_agent import ReActResult
+
+    def _fake_handle(prompt: str, history=None, known_files=None, thread_id=None):
+        return ReActResult(answer="alias works", model="llama3.1:8b")
+
+    monkeypatch.setattr(main_module._react_langgraph_agent, "handle", _fake_handle)
+
+    response = client.post("/agent/react/langgraph", json={"prompt": "hi"})
+
+    assert response.status_code == 200
+    assert response.json()["answer"] == "alias works"
+
+
 def test_agent_react_reasoning_endpoint_returns_steps_and_reasoning(monkeypatch):
     from app.reasoning_react_agent import ReasoningReActResult, ReasoningReActStep
 
@@ -237,7 +299,7 @@ def test_agent_react_reasoning_endpoint_returns_steps_and_reasoning(monkeypatch)
 def test_agent_react_reasoning_langgraph_endpoint_returns_steps_and_reasoning(monkeypatch):
     from app.reasoning_react_agent import ReasoningReActResult, ReasoningReActStep
 
-    def _fake_handle(prompt: str, history=None):
+    def _fake_handle(prompt: str, history=None, thread_id=None):
         return ReasoningReActResult(
             answer="84",
             reasoning="the observation confirms it",
@@ -269,4 +331,51 @@ def test_agent_react_reasoning_langgraph_endpoint_returns_steps_and_reasoning(mo
     assert body["steps"][0]["observation"] == "84"
     assert body["model"] == "deepseek-r1:14b"
     assert body["hit_iteration_limit"] is False
+
+
+def test_agent_react_endpoint_surfaces_awaiting_user_input(monkeypatch):
+    from app.react_agent import ReActResult, ReActStep
+
+    def _fake_handle(prompt: str, history=None, known_files=None, thread_id=None):
+        return ReActResult(
+            answer="Which file do you mean?",
+            steps=[
+                ReActStep(tool_name="ask_user", tool_args={"question": "Which file do you mean?"}, observation="(Question sent to the user -- awaiting their reply: Which file do you mean?)")
+            ],
+            iterations=1,
+            model="llama3.1:8b",
+            hit_iteration_limit=False,
+            awaiting_user_input=True,
+        )
+
+    monkeypatch.setattr(main_module._react_langgraph_agent, "handle", _fake_handle)
+
+    response = client.post("/agent/react", json={"prompt": "edit the config file"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["awaiting_user_input"] is True
+    assert body["answer"] == "Which file do you mean?"
+
+
+def test_agent_react_reasoning_endpoint_surfaces_awaiting_user_input(monkeypatch):
+    from app.reasoning_react_agent import ReasoningReActResult
+
+    def _fake_handle(prompt: str, history=None):
+        return ReasoningReActResult(
+            answer="Which file do you mean?",
+            reasoning="Ambiguous request, need clarification.",
+            model="deepseek-r1:14b",
+            awaiting_user_input=True,
+        )
+
+    monkeypatch.setattr(main_module._reasoning_react_agent, "handle", _fake_handle)
+
+    response = client.post("/agent/react/reasoning", json={"prompt": "edit the config file"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["awaiting_user_input"] is True
+    assert body["answer"] == "Which file do you mean?"
+
 

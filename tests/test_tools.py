@@ -1,14 +1,23 @@
 from app.tools import (
+    arxiv_search,
+    ask_user,
     calculator,
     copy_file,
+    crawl_website,
     edit_file,
+    fetch_webpage,
     file_delete,
     file_search,
+    get_errors,
+    google_search,
+    grep_search,
     knowledge_base_lookup,
     list_directory,
     move_file,
     read_file,
     run_shell_command,
+    stackexchange_search,
+    web_search,
     wikipedia_search,
     write_file,
 )
@@ -281,6 +290,334 @@ def test_wikipedia_search_handles_network_errors_gracefully(monkeypatch):
     assert "no network" in result
 
 
+def test_web_search_returns_summary_on_success(monkeypatch):
+    import app.tools as tools_module
+
+    class _FakeDdgWrapper:
+        def run(self, query: str) -> str:
+            return f"Web summary about {query}"
+
+    monkeypatch.setattr(tools_module, "_ddg_wrapper", _FakeDdgWrapper())
+
+    result = web_search.invoke({"query": "OpenKBS infrastructure"})
+
+    assert result == "Web summary about OpenKBS infrastructure"
+
+
+def test_web_search_handles_no_results(monkeypatch):
+    import app.tools as tools_module
+
+    class _FakeDdgWrapper:
+        def run(self, query: str) -> str:
+            return ""
+
+    monkeypatch.setattr(tools_module, "_ddg_wrapper", _FakeDdgWrapper())
+
+    result = web_search.invoke({"query": "asdkjfhaslkdjfh"})
+
+    assert "No web search results found" in result
+
+
+def test_web_search_handles_network_errors_gracefully(monkeypatch):
+    import app.tools as tools_module
+
+    class _FakeDdgWrapper:
+        def run(self, query: str) -> str:
+            raise ConnectionError("no network")
+
+    monkeypatch.setattr(tools_module, "_ddg_wrapper", _FakeDdgWrapper())
+
+    result = web_search.invoke({"query": "anything"})
+
+    assert result.startswith("Error searching the web")
+    assert "no network" in result
+
+
+def test_web_search_reports_missing_dependency_clearly(monkeypatch):
+    import app.tools as tools_module
+
+    monkeypatch.setattr(tools_module, "_ddg_wrapper", None)
+    monkeypatch.setattr(tools_module, "_ddg_import_error", ImportError("no module"))
+
+    result = web_search.invoke({"query": "anything"})
+
+    assert result.startswith("Error: web_search is unavailable")
+
+
+def test_google_search_returns_summary_on_success(monkeypatch):
+    import app.tools as tools_module
+
+    class _FakeGoogleWrapper:
+        def run(self, query: str) -> str:
+            return f"Google summary about {query}"
+
+    monkeypatch.setattr(tools_module, "_google_wrapper", _FakeGoogleWrapper())
+
+    result = google_search.invoke({"query": "OpenKBS infrastructure"})
+
+    assert result == "Google summary about OpenKBS infrastructure"
+
+
+def test_google_search_handles_network_errors_gracefully(monkeypatch):
+    import app.tools as tools_module
+
+    class _FakeGoogleWrapper:
+        def run(self, query: str) -> str:
+            raise ConnectionError("no network")
+
+    monkeypatch.setattr(tools_module, "_google_wrapper", _FakeGoogleWrapper())
+
+    result = google_search.invoke({"query": "anything"})
+
+    assert result.startswith("Error searching Google")
+    assert "no network" in result
+
+
+def test_google_search_falls_back_to_bing_scrape_without_api_key(monkeypatch):
+    # No SERPER_API_KEY configured -- 'google_search' must still return real
+    # results via the key-free Bing HTML scrape instead of just reporting
+    # itself unavailable.
+    import app.tools as tools_module
+
+    def _fake_scrape(query, num_results=5):
+        return [
+            {
+                "title": "OpenKBS",
+                "url": "https://openkbs.com",
+                "description": "An agentic services platform.",
+            }
+        ]
+
+    monkeypatch.setattr(tools_module, "_google_wrapper", None)
+    monkeypatch.setattr(tools_module, "_bing_search_scrape", _fake_scrape)
+
+    result = google_search.invoke({"query": "OpenKBS agentic services"})
+
+    assert "OpenKBS" in result
+    assert "https://openkbs.com" in result
+    assert "An agentic services platform." in result
+
+
+def test_google_search_scrape_fallback_handles_errors_gracefully(monkeypatch):
+    import app.tools as tools_module
+
+    def _fake_scrape(query, num_results=5):
+        raise ConnectionError("blocked")
+
+    monkeypatch.setattr(tools_module, "_google_wrapper", None)
+    monkeypatch.setattr(tools_module, "_bing_search_scrape", _fake_scrape)
+
+    result = google_search.invoke({"query": "anything"})
+
+    assert result.startswith("Error searching for")
+    assert "blocked" in result
+
+
+def test_google_search_scrape_fallback_reports_no_results(monkeypatch):
+    import app.tools as tools_module
+
+    monkeypatch.setattr(tools_module, "_google_wrapper", None)
+    monkeypatch.setattr(tools_module, "_bing_search_scrape", lambda query, **kw: [])
+
+    result = google_search.invoke({"query": "anything"})
+
+    assert result == "No search results found for 'anything'."
+
+
+def test_decode_bing_redirect_url_extracts_real_target_url():
+    from app.tools import _decode_bing_redirect_url
+
+    href = (
+        "https://www.bing.com/ck/a?!&&p=abc123&u=a1aHR0cHM6Ly9vcGVuYWkuY29tLw&ntb=1"
+    )
+
+    assert _decode_bing_redirect_url(href) == "https://openai.com/"
+
+
+def test_decode_bing_redirect_url_passes_through_non_matching_href():
+    from app.tools import _decode_bing_redirect_url
+
+    assert _decode_bing_redirect_url("https://example.com") == "https://example.com"
+
+
+
+def test_arxiv_search_returns_summary_on_success(monkeypatch):
+    import app.tools as tools_module
+
+    class _FakeArxivTool:
+        def invoke(self, args: dict) -> str:
+            return f"Arxiv summary about {args['query']}"
+
+    monkeypatch.setattr(tools_module, "_arxiv_tool", _FakeArxivTool())
+
+    result = arxiv_search.invoke({"query": "attention is all you need"})
+
+    assert result == "Arxiv summary about attention is all you need"
+
+
+def test_arxiv_search_handles_network_errors_gracefully(monkeypatch):
+    import app.tools as tools_module
+
+    class _FakeArxivTool:
+        def invoke(self, args: dict) -> str:
+            raise ConnectionError("no network")
+
+    monkeypatch.setattr(tools_module, "_arxiv_tool", _FakeArxivTool())
+
+    result = arxiv_search.invoke({"query": "anything"})
+
+    assert result.startswith("Error searching arXiv")
+    assert "no network" in result
+
+
+def test_arxiv_search_reports_missing_dependency_clearly(monkeypatch):
+    import app.tools as tools_module
+
+    monkeypatch.setattr(tools_module, "_arxiv_tool", None)
+    monkeypatch.setattr(tools_module, "_arxiv_import_error", ImportError("no module"))
+
+    result = arxiv_search.invoke({"query": "anything"})
+
+    assert result.startswith("Error: arxiv_search is unavailable")
+
+
+def test_stackexchange_search_returns_summary_on_success(monkeypatch):
+    import app.tools as tools_module
+
+    class _FakeStackExchangeTool:
+        def invoke(self, args: dict) -> str:
+            return f"SO summary about {args['query']}"
+
+    monkeypatch.setattr(tools_module, "_stackexchange_tool", _FakeStackExchangeTool())
+
+    result = stackexchange_search.invoke({"query": "reverse a list in python"})
+
+    assert result == "SO summary about reverse a list in python"
+
+
+def test_stackexchange_search_handles_network_errors_gracefully(monkeypatch):
+    import app.tools as tools_module
+
+    class _FakeStackExchangeTool:
+        def invoke(self, args: dict) -> str:
+            raise ConnectionError("no network")
+
+    monkeypatch.setattr(tools_module, "_stackexchange_tool", _FakeStackExchangeTool())
+
+    result = stackexchange_search.invoke({"query": "anything"})
+
+    assert result.startswith("Error searching Stack Exchange")
+    assert "no network" in result
+
+
+def test_stackexchange_search_reports_missing_dependency_clearly(monkeypatch):
+    import app.tools as tools_module
+
+    monkeypatch.setattr(tools_module, "_stackexchange_tool", None)
+    monkeypatch.setattr(
+        tools_module, "_stackexchange_import_error", ImportError("no module")
+    )
+
+    result = stackexchange_search.invoke({"query": "anything"})
+
+    assert result.startswith("Error: stackexchange_search is unavailable")
+
+
+def test_fetch_webpage_rejects_non_http_url():
+    result = fetch_webpage.invoke({"url": "not-a-url"})
+
+    assert result.startswith("Error:")
+    assert "not a valid http" in result
+
+
+def test_fetch_webpage_strips_html_and_returns_text(monkeypatch):
+    import app.tools as tools_module
+
+    class _FakeResponse:
+        content = (
+            b"<html><head><style>body{}</style></head>"
+            b"<body><p>Hello world</p></body></html>"
+        )
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class _FakeRequestsModule:
+        @staticmethod
+        def get(url, timeout=None, headers=None):
+            return _FakeResponse()
+
+    monkeypatch.setitem(__import__("sys").modules, "requests", _FakeRequestsModule())
+
+    result = fetch_webpage.invoke({"url": "https://example.com"})
+
+    assert result == "Hello world"
+
+
+
+def test_fetch_webpage_handles_network_errors_gracefully(monkeypatch):
+    class _FakeRequestsModule:
+        @staticmethod
+        def get(url, timeout=None, headers=None):
+            raise ConnectionError("no network")
+
+    monkeypatch.setitem(__import__("sys").modules, "requests", _FakeRequestsModule())
+
+    result = fetch_webpage.invoke({"url": "https://example.com"})
+
+    assert result.startswith("Error fetching")
+    assert "no network" in result
+
+
+def test_crawl_website_rejects_non_http_url():
+    result = crawl_website.invoke({"url": "not-a-url", "max_pages": 3})
+
+    assert result.startswith("Error:")
+    assert "not a valid http" in result
+
+
+def test_crawl_website_follows_same_domain_links_and_respects_max_pages(monkeypatch):
+    pages = {
+        "https://example.com/": (
+            b"<html><body><p>Home page</p>"
+            b'<a href="/about">About</a>'
+            b'<a href="https://other.com/x">External</a>'
+            b"</body></html>"
+        ),
+        "https://example.com/about": (
+            b"<html><body><p>About page</p>"
+            b'<a href="/contact">Contact</a>'
+            b"</body></html>"
+        ),
+        "https://example.com/contact": b"<html><body><p>Contact page</p></body></html>",
+    }
+
+    class _FakeResponse:
+        def __init__(self, content: bytes) -> None:
+            self.content = content
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class _FakeRequestsModule:
+        @staticmethod
+        def get(url, timeout=None, headers=None):
+            return _FakeResponse(pages[url])
+
+    monkeypatch.setitem(__import__("sys").modules, "requests", _FakeRequestsModule())
+
+    result = crawl_website.invoke({"url": "https://example.com/", "max_pages": 2})
+
+    assert "=== https://example.com/ ===" in result
+    assert "Home page" in result
+    assert "=== https://example.com/about ===" in result
+    assert "About page" in result
+    # max_pages=2 must stop before the 3rd discovered page, and must never
+    # cross onto the external, different-domain link.
+    assert "Contact page" not in result
+    assert "other.com" not in result
+
+
 def test_file_search_finds_matching_files(tmp_path):
     (tmp_path / "a.txt").write_text("a")
     (tmp_path / "b.py").write_text("b")
@@ -321,3 +658,93 @@ def test_file_delete_removes_file(tmp_path):
 
     assert not target.exists()
     assert "deleted" in result.lower()
+
+
+def test_grep_search_finds_literal_match(tmp_path):
+    (tmp_path / "a.py").write_text("def foo():\n    return 1\n")
+    (tmp_path / "b.py").write_text("def bar():\n    return 2\n")
+
+    result = grep_search.invoke({"query": "def foo", "dir_path": str(tmp_path)})
+
+    assert "a.py:1:" in result
+    assert "b.py" not in result
+
+
+def test_grep_search_regex_mode(tmp_path):
+    (tmp_path / "a.py").write_text("value = 123\nother = 456\n")
+
+    result = grep_search.invoke(
+        {"query": r"\d{3}", "dir_path": str(tmp_path), "is_regex": True}
+    )
+
+    assert "a.py:1:" in result
+    assert "a.py:2:" in result
+
+
+def test_grep_search_respects_include_pattern(tmp_path):
+    (tmp_path / "a.py").write_text("needle\n")
+    (tmp_path / "b.txt").write_text("needle\n")
+
+    result = grep_search.invoke(
+        {"query": "needle", "dir_path": str(tmp_path), "include_pattern": "*.py"}
+    )
+
+    assert "a.py" in result
+    assert "b.txt" not in result
+
+
+def test_grep_search_no_matches(tmp_path):
+    (tmp_path / "a.py").write_text("def foo():\n    return 1\n")
+
+    result = grep_search.invoke(
+        {"query": "zzz_definitely_not_present_zzz", "dir_path": str(tmp_path)}
+    )
+
+    assert result.startswith("No matches found")
+
+
+def test_grep_search_rejects_missing_directory():
+    result = grep_search.invoke({"query": "x", "dir_path": "/no/such/dir"})
+    assert result.startswith("Error:")
+
+
+def test_grep_search_rejects_invalid_regex():
+    result = grep_search.invoke({"query": "(", "is_regex": True})
+    assert result.startswith("Error: invalid regex")
+
+
+def test_get_errors_reports_clean_file(tmp_path):
+    clean = tmp_path / "clean.py"
+    clean.write_text("def add(a, b):\n    return a + b\n")
+
+    result = get_errors.invoke({"file_paths": [str(clean)]})
+
+    assert f"'{clean}': no errors found." in result
+
+
+def test_get_errors_reports_real_problem(tmp_path):
+    broken = tmp_path / "broken.py"
+    # Unused import -- a real ruff (F401) finding.
+    broken.write_text("import os\n\n\ndef f():\n    return 1\n")
+
+    result = get_errors.invoke({"file_paths": [str(broken)]})
+
+    assert "problem(s)" in result
+    assert "F401" in result
+
+
+def test_get_errors_reports_missing_file():
+    result = get_errors.invoke({"file_paths": ["/no/such/file.py"]})
+    assert "not found" in result
+
+
+def test_get_errors_rejects_empty_list():
+    result = get_errors.invoke({"file_paths": []})
+    assert result.startswith("Error:")
+
+
+def test_ask_user_echoes_question():
+    result = ask_user.invoke({"question": "Which file do you mean?"})
+    assert "Which file do you mean?" in result
+
+

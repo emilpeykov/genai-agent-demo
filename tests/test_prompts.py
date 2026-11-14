@@ -126,3 +126,54 @@ def test_render_react_system_prompt_forbids_describing_a_plan_without_acting():
     assert "actually issue the real tool call in this SAME turn" in rendered
 
 
+def test_render_react_system_prompt_tells_model_to_use_real_tool_output_verbatim():
+    # Regression test: asked to "get the current memory usage and save it to
+    # a file", qwen3:14b correctly called system_resources, reported the real
+    # numbers in its chat answer, but then called write_file with a
+    # fabricated placeholder string (e.g. "Memory usage: 1234567890 bytes")
+    # instead of the real observation text -- so the FILE ON DISK ended up
+    # wrong even though the chat answer looked correct. The prompt must
+    # explicitly require copying a prior tool's real output verbatim into a
+    # later tool call's arguments, not paraphrasing/inventing a placeholder.
+    rendered = render_react_system_prompt(["system_resources", "write_file"])
+
+    assert "USE REAL TOOL OUTPUT VERBATIM" in rendered
+    assert "character for character" in rendered
+    assert "Do NOT invent, paraphrase, " in rendered
+
+
+def test_render_react_system_prompt_tells_model_to_escalate_across_search_tools():
+    # Regression test: asked to research a topic, the model called
+    # 'web_search' once, got a thin/short result, and gave a final answer
+    # without ever trying 'google_search'/'wikipedia_search'/'fetch_webpage'
+    # to get a fuller answer. The prompt must require escalating through
+    # the other search tools (and fetching a result URL's full page text)
+    # before settling for one shallow search result.
+    rendered = render_react_system_prompt(
+        ["web_search", "google_search", "wikipedia_search", "fetch_webpage"]
+    )
+
+    assert "SEARCH ESCALATION" in rendered
+    assert "NOT a sign the information doesn't exist" in rendered
+    assert "fetch_webpage" in rendered
+    assert "do not give up after a single thin 'web_search' call" in rendered
+
+
+def test_render_react_system_prompt_tells_model_to_always_state_exact_file_paths():
+    # Regression test: asked to create a file in one turn, then "read back
+    # that file" in a later turn, qwen3:14b had no memory of the exact path
+    # it had just used -- it had to fall back on 'find the most recently
+    # modified file' instead of just knowing it. Root cause: ReActAgent.handle()
+    # only replays each past turn's plain ANSWER TEXT into history, never the
+    # real tool_calls/arguments/observations behind it -- so if the model's
+    # own answer was vague ("I've saved it for you") instead of stating the
+    # real path, that path is permanently lost for later turns. The prompt
+    # must require the final answer to always restate the exact file path(s)
+    # involved in any file operation.
+    rendered = render_react_system_prompt(["write_file", "read_file", "edit_file"])
+
+    assert "ALWAYS STATE EXACT FILE PATHS IN YOUR ANSWER" in rendered
+    assert "only the plain TEXT of your own past final answers is" in rendered
+    assert "MUST explicitly restate the exact, full path(s) involved" in rendered
+
+

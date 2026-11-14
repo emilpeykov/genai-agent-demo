@@ -24,7 +24,8 @@ from app.lcel_chain import (
     build_tool_calling_chain_streaming_with_memory,
     build_tool_calling_chain_with_memory,
 )
-from app.react_agent import ReActAgent, ReActResult
+from app.react_agent import ReActResult
+from app.react_langgraph_agent import ReActLangGraphAgent
 from app.reasoning import generate_with_reasoning, stream_with_reasoning
 from app.reasoning_langgraph_agent import ReasoningLangGraphAgent
 from app.reasoning_react_agent import ReasoningReActAgent, ReasoningReActResult
@@ -94,7 +95,7 @@ app = FastAPI(
 
 
 _agent = Agent()
-_react_agent = ReActAgent()
+_react_langgraph_agent = ReActLangGraphAgent()
 _reasoning_react_agent = ReasoningReActAgent()
 _reasoning_langgraph_agent = ReasoningLangGraphAgent()
 # Built once at import time -- building it just composes Runnables (cheap,
@@ -164,6 +165,20 @@ class ChatRequest(BaseModel):
             "conversation/user."
         ),
     )
+    thread_id: str | None = Field(
+        default=None,
+        description=(
+            "Used by /agent/react and /agent/react/reasoning/langgraph. An "
+            "arbitrary id identifying this conversation -- the server "
+            "remembers every turn under the same thread_id (via LangGraph's "
+            "MemorySaver checkpointer) and automatically includes it on the "
+            "next call with that same id, so (like 'session_id' above, but "
+            "for the LangGraph agents) the caller does NOT need to resend "
+            "prior turns via 'history' themselves. Use a different thread_id "
+            "per independent conversation/user. Omit it to fall back to "
+            "stateless, caller-managed 'history' behavior."
+        ),
+    )
 
 
 class ChatResponse(BaseModel):
@@ -207,6 +222,16 @@ class ReActResponse(BaseModel):
     iterations: int
     model: str
     hit_iteration_limit: bool
+    awaiting_user_input: bool = Field(
+        default=False,
+        description=(
+            "True if the agent called 'ask_user' and stopped -- 'answer' is "
+            "then a QUESTION for the real user, not a final answer. Show it "
+            "to them, collect their reply, and call this endpoint again "
+            "with that reply as 'prompt' (same history/thread_id as before) "
+            "to resume where the agent left off."
+        ),
+    )
 
     @classmethod
     def from_react_result(cls, result: ReActResult) -> "ReActResponse":
@@ -216,6 +241,7 @@ class ReActResponse(BaseModel):
             iterations=result.iterations,
             model=result.model,
             hit_iteration_limit=result.hit_iteration_limit,
+            awaiting_user_input=result.awaiting_user_input,
         )
 
 
@@ -235,6 +261,14 @@ class ReasoningReActResponse(BaseModel):
     iterations: int
     model: str
     hit_iteration_limit: bool
+    awaiting_user_input: bool = Field(
+        default=False,
+        description=(
+            "Same meaning as ReActResponse.awaiting_user_input -- True if "
+            "'ask_user' stopped the loop, in which case 'answer' is a "
+            "question for the real user, not a final answer."
+        ),
+    )
 
     @classmethod
     def from_result(cls, result: ReasoningReActResult) -> "ReasoningReActResponse":
@@ -245,6 +279,7 @@ class ReasoningReActResponse(BaseModel):
             iterations=result.iterations,
             model=result.model,
             hit_iteration_limit=result.hit_iteration_limit,
+            awaiting_user_input=result.awaiting_user_input,
         )
 
 
@@ -350,12 +385,31 @@ def agent_react(request: ChatRequest) -> ReActResponse:
     """Same task as /chat, but the LLM itself decides which tool(s) to call
     and when to stop, instead of our own routing rules. Requires Ollama
     running locally with a tool-calling-capable model (e.g. llama3.1).
-    Pass prior turns via ``history`` to continue a multi-turn conversation --
-    otherwise each call is independent and the model has no memory of
-    anything said earlier."""
+
+    Orchestrated as a LangGraph ``StateGraph`` via
+    ``app.react_langgraph_agent.ReActLangGraphAgent``, compiled with
+    LangGraph's ``MemorySaver`` checkpointer. Pass ``thread_id`` to get
+    server-managed multi-turn memory: the server snapshots the full
+    conversation state (including real past tool calls/results, not just
+    prior answer text) after every turn and retrieves it automatically on
+    the next call with the SAME thread_id -- you don't need to resend
+    ``history`` yourself, and a file path (or any other value learned via a
+    tool call) earlier in the conversation is never silently lost even if a
+    past answer was vague. Omit ``thread_id`` and pass prior turns via
+    ``history`` instead for the original, caller-managed behavior."""
     history = [{"role": m.role, "content": m.content} for m in request.history]
-    result = _react_agent.handle(request.prompt, history=history)
+    result = _react_langgraph_agent.handle(
+        request.prompt, history=history, thread_id=request.thread_id
+    )
     return ReActResponse.from_react_result(result)
+
+
+@app.post("/agent/react/langgraph", response_model=ReActResponse)
+def agent_react_langgraph(request: ChatRequest) -> ReActResponse:
+    """Deprecated alias for /agent/react -- both now serve the same
+    ``ReActLangGraphAgent``, kept around only for backwards compatibility
+    with existing callers of this specific path. Prefer /agent/react."""
+    return agent_react(request)
 
 
 @app.post("/agent/react/reasoning", response_model=ReasoningReActResponse)
@@ -386,9 +440,18 @@ def agent_react_reasoning_langgraph(request: ChatRequest) -> ReasoningReActRespo
     edge that routes back to the model with the REAL parse error as
     feedback -- an explicit self-correction cycle, instead of folding retry
     logic into one long method. See that module's docstring for the graph
-    shape and rationale."""
+    shape and rationale.
+
+    Pass ``thread_id`` to get server-managed multi-turn memory via
+    LangGraph's ``MemorySaver`` checkpointer -- the server remembers every
+    turn sent under that id automatically, so you don't need to resend
+    ``history`` yourself (same idea as ``session_id`` for
+    /chat/lcel/tools/memory). Omit ``thread_id`` to fall back to the
+    original, caller-managed ``history`` behavior."""
     history = [{"role": m.role, "content": m.content} for m in request.history]
-    result = _reasoning_langgraph_agent.handle(request.prompt, history=history)
+    result = _reasoning_langgraph_agent.handle(
+        request.prompt, history=history, thread_id=request.thread_id
+    )
     return ReasoningReActResponse.from_result(result)
 
 

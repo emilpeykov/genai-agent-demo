@@ -193,3 +193,83 @@ def test_includes_prior_history_in_the_model_request(mock_post):
     assert history[0] in sent_messages
     assert history[1] in sent_messages
 
+
+@patch("app.reasoning_langgraph_agent.httpx.post")
+def test_thread_id_remembers_conversation_without_caller_supplied_history(mock_post):
+    # The checkpointer-backed path: no 'history' is ever passed in by the
+    # caller, yet the SECOND call (same thread_id) must still see the FIRST
+    # call's user prompt and assistant answer in the messages sent to the
+    # model -- the server, not the caller, is responsible for continuity.
+    mock_post.side_effect = [
+        _mock_chat_response(
+            {"role": "assistant", "content": "Final Answer: $2,528.27", "thinking": ""}
+        ),
+        _mock_chat_response(
+            {"role": "assistant", "content": "Final Answer: $2,271.16", "thinking": ""}
+        ),
+    ]
+
+    agent = ReasoningLangGraphAgent(model="test-model")
+    agent.handle(
+        "What's my monthly cost for a $400,000 loan at 6.5% for 30 years?",
+        thread_id="user_session_123",
+    )
+    agent.handle(
+        "What would it be if the rate dropped to 5.5% instead?",
+        thread_id="user_session_123",
+    )
+
+    second_call_messages = mock_post.call_args_list[1].kwargs["json"]["messages"]
+    contents = [m["content"] for m in second_call_messages]
+    assert "What's my monthly cost for a $400,000 loan at 6.5% for 30 years?" in contents
+    assert "$2,528.27" in contents
+    assert "What would it be if the rate dropped to 5.5% instead?" in contents
+
+
+@patch("app.reasoning_langgraph_agent.httpx.post")
+def test_different_thread_ids_are_isolated(mock_post):
+    mock_post.side_effect = [
+        _mock_chat_response(
+            {"role": "assistant", "content": "Final Answer: first thread answer", "thinking": ""}
+        ),
+        _mock_chat_response(
+            {"role": "assistant", "content": "Final Answer: second thread answer", "thinking": ""}
+        ),
+    ]
+
+    agent = ReasoningLangGraphAgent(model="test-model")
+    agent.handle("Remember the number 42.", thread_id="thread-a")
+    agent.handle("What number did I just mention?", thread_id="thread-b")
+
+    second_call_messages = mock_post.call_args_list[1].kwargs["json"]["messages"]
+    contents = [m["content"] for m in second_call_messages]
+    assert "Remember the number 42." not in contents
+    assert "What number did I just mention?" in contents
+
+
+@patch("app.reasoning_langgraph_agent.httpx.post")
+def test_stops_immediately_on_ask_user(mock_post):
+    # 'ask_user' must short-circuit the graph right from inside the tool
+    # node -- the question becomes this turn's "answer" and
+    # awaiting_user_input is set, instead of routing back to the agent node
+    # for another round it has no real reply to give yet.
+    mock_post.side_effect = [
+        _mock_chat_response(
+            {
+                "role": "assistant",
+                "content": 'Action: ask_user\nAction Input: {"question": "Which file do you mean?"}',
+                "thinking": "I need to clarify which file before proceeding.",
+            }
+        ),
+    ]
+
+    agent = ReasoningLangGraphAgent(model="test-model")
+    result = agent.handle("edit the config file", thread_id="ask-user-thread")
+
+    assert result.answer == "Which file do you mean?"
+    assert result.awaiting_user_input is True
+    assert len(result.steps) == 1
+    assert result.steps[0].tool_name == "ask_user"
+    assert mock_post.call_count == 1
+
+
