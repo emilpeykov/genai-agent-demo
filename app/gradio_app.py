@@ -17,7 +17,13 @@ import gradio as gr
 # TEMP: all other agents/chains commented out below -- only the ReAct agent
 # (qwen3:14b) tab is active right now. Uncomment the imports/instantiations/
 # tabs below to bring the other comparisons back.
-# from app.agent import Agent
+#
+# "Rule-based agent" is restored and active (see build_app() below) because
+# it's the one tab that runs with ZERO external dependencies (no Ollama, no
+# API key -- see app.providers.get_default_provider's "mock" default) -- the
+# ideal always-working default demo for a public Hugging Face Space, where
+# there's no local Ollama server to reach.
+from app.agent import Agent
 # from app.lcel_chain import (
 #     build_assistant_chain,
 #     build_assistant_chain_streaming,
@@ -31,7 +37,7 @@ from app.react_langgraph_agent import ReActLangGraphAgent
 # from app.reasoning_langgraph_agent import ReasoningLangGraphAgent
 # from app.reasoning_react_agent import ReasoningReActAgent
 
-# _rule_based_agent = Agent()
+_rule_based_agent = Agent()
 # Hardcoded to qwen3:14b (instead of relying on OLLAMA_BALANCED_MODEL) so this
 # tab is self-contained regardless of how the app is launched -- see the two
 # live-tested fixes in app.react_agent.ReActAgent.handle() for why qwen3
@@ -127,15 +133,15 @@ def _clean_history_for_model(history: list) -> list[dict]:
     return cleaned
 
 
-# def _chat_rule_based(message: str, history: list) -> str:
-#     result = _rule_based_agent.handle(message)
-#     meta = (
-#         f"{_META_SEPARATOR}*tool: `{result.tool_used or 'none'}` | "
-#         f"model: `{result.model or 'n/a'}` | tier: `{result.tier or 'n/a'}` | "
-#         f"cost: ${result.estimated_cost_usd:.5f} | "
-#         f"reason: {result.routing_reason}*"
-#     )
-#     return result.answer + meta
+def _chat_rule_based(message: str, history: list) -> str:
+    result = _rule_based_agent.handle(message)
+    meta = (
+        f"{_META_SEPARATOR}*tool: `{result.tool_used or 'none'}` | "
+        f"model: `{result.model or 'n/a'}` | tier: `{result.tier or 'n/a'}` | "
+        f"cost: ${result.estimated_cost_usd:.5f} | "
+        f"reason: {result.routing_reason}*"
+    )
+    return result.answer + meta
 
 
 def _react_respond(
@@ -184,51 +190,71 @@ def _react_respond(
         extra = f"<i>🤔 {thinking_acc}</i>\n\n" if thinking_acc else ""
         return transcript + extra
 
-    for event in _react_agent.handle_stream(message, thread_id=thread_id):
-        kind = event["type"]
-        if kind == "thinking_delta":
-            thinking_acc += event["text"]
-            thinking_history[-1]["content"] = thinking_view()
-        elif kind == "content_delta":
-            content_acc += event["text"]
-            answer_history[-1]["content"] = content_acc
-        elif kind == "tool_call":
-            if thinking_acc:
-                transcript += f"<i>🤔 {thinking_acc}</i>\n\n"
-                thinking_acc = ""
-            content_acc = ""  # discard any stray pre-tool-call content
-            transcript += f"🔧 `{event['tool_name']}({event['tool_args']})`\n\n"
-            thinking_history[-1]["content"] = thinking_view()
-        elif kind == "observation":
-            transcript += f"➡️ {event['observation'][:300]}\n\n"
-            thinking_history[-1]["content"] = thinking_view()
-        elif kind == "final":
-            if thinking_acc:
-                transcript += f"<i>🤔 {thinking_acc}</i>\n\n"
-                thinking_acc = ""
-            result = event["result"]
-            transcript += (
-                f"\n\n---\n*model: `{result.model}` | iterations: {result.iterations} | "
-                f"hit iteration limit: {result.hit_iteration_limit}*"
-            )
-            thinking_history[-1]["content"] = thinking_view()
-            if result.awaiting_user_input:
-                # 'ask_user' fired: result.answer is a QUESTION, not a final
-                # answer, and it never streamed through content_delta (the
-                # tool call short-circuits the loop before any more content
-                # is generated) -- so content_acc would otherwise be left
-                # blank here, making the right-hand panel look stuck/empty
-                # even though the agent is correctly waiting for a reply.
-                # Show the question clearly and prompt the user to just type
-                # their answer as the next message -- thanks to the
-                # checkpointer-backed thread_id, that next message naturally
-                # resumes this same conversation where it left off.
-                answer_history[-1]["content"] = (
-                    f"❓ **{result.answer}**\n\n*(Type your reply in the message "
-                    "box below to continue.)*"
-                )
-            else:
+    try:
+        for event in _react_agent.handle_stream(message, thread_id=thread_id):
+            kind = event["type"]
+            if kind == "thinking_delta":
+                thinking_acc += event["text"]
+                thinking_history[-1]["content"] = thinking_view()
+            elif kind == "content_delta":
+                content_acc += event["text"]
                 answer_history[-1]["content"] = content_acc
+            elif kind == "tool_call":
+                if thinking_acc:
+                    transcript += f"<i>🤔 {thinking_acc}</i>\n\n"
+                    thinking_acc = ""
+                content_acc = ""  # discard any stray pre-tool-call content
+                transcript += f"🔧 `{event['tool_name']}({event['tool_args']})`\n\n"
+                thinking_history[-1]["content"] = thinking_view()
+            elif kind == "observation":
+                transcript += f"➡️ {event['observation'][:300]}\n\n"
+                thinking_history[-1]["content"] = thinking_view()
+            elif kind == "final":
+                if thinking_acc:
+                    transcript += f"<i>🤔 {thinking_acc}</i>\n\n"
+                    thinking_acc = ""
+                result = event["result"]
+                transcript += (
+                    f"\n\n---\n*model: `{result.model}` | iterations: {result.iterations} | "
+                    f"hit iteration limit: {result.hit_iteration_limit}*"
+                )
+                thinking_history[-1]["content"] = thinking_view()
+                if result.awaiting_user_input:
+                    # 'ask_user' fired: result.answer is a QUESTION, not a
+                    # final answer, and it never streamed through
+                    # content_delta (the tool call short-circuits the loop
+                    # before any more content is generated) -- so content_acc
+                    # would otherwise be left blank here, making the
+                    # right-hand panel look stuck/empty even though the agent
+                    # is correctly waiting for a reply. Show the question
+                    # clearly and prompt the user to just type their answer
+                    # as the next message -- thanks to the checkpointer-backed
+                    # thread_id, that next message naturally resumes this
+                    # same conversation where it left off.
+                    answer_history[-1]["content"] = (
+                        f"❓ **{result.answer}**\n\n*(Type your reply in the "
+                        "message box below to continue.)*"
+                    )
+                else:
+                    answer_history[-1]["content"] = content_acc
+            yield thinking_history, answer_history, "", thread_id
+    except Exception as exc:
+        # This tab needs a real Ollama server reachable at OLLAMA_BASE_URL
+        # (see app.config) -- when this app is deployed somewhere WITHOUT
+        # one (e.g. a public Hugging Face Space with no local Ollama), that
+        # call fails with a connection error. Without this guard, Gradio
+        # would surface a raw Python traceback and the whole tab would look
+        # broken/crashed instead of explaining what's actually missing.
+        error_note = (
+            f"⚠️ **Couldn't reach the Ollama backend** ({exc}).\n\n"
+            "This tab requires a local Ollama server running the "
+            "`qwen3:14b` model (see the README's 'Running locally' "
+            "section). If you're trying this on a hosted demo with no "
+            "Ollama available, use the **Rule-based agent** tab instead -- "
+            "it runs fully offline with no external dependencies."
+        )
+        thinking_history[-1]["content"] = thinking_view() + error_note
+        answer_history[-1]["content"] = error_note
         yield thinking_history, answer_history, "", thread_id
 
 
@@ -353,13 +379,34 @@ def build_app() -> gr.Blocks:
     with gr.Blocks(title="GenAI Agent Demo") as demo:
         gr.Markdown(
             "# GenAI Agent Demo\n"
-            "**All other comparison tabs are temporarily commented out** -- "
-            "only the LLM-driven **ReAct agent** (`/agent/react`), hardcoded "
-            "to `qwen3:14b`, is active. See `app/gradio_app.py` to restore "
-            "the rest (every other tab/handler is still there, just "
-            "commented)."
+            "**Rule-based agent** works fully offline (no API key, no local "
+            "Ollama needed) -- the safe default if you're trying this on a "
+            "hosted demo (e.g. a public Hugging Face Space). The LLM-driven "
+            "**ReAct agent** tab needs a real Ollama server reachable at "
+            "`OLLAMA_BASE_URL` (see `.env.example`) -- it'll show a clear "
+            "error instead of crashing if one isn't available. Other "
+            "comparison tabs are temporarily commented out -- see "
+            "`app/gradio_app.py` to restore them."
         )
-        with gr.Tab("ReAct agent (/agent/react) -- qwen3:14b"):
+        with gr.Tab("Rule-based agent (/chat) -- offline, no API key"):
+            gr.Markdown(
+                "Deterministic tool-use short-circuits (arithmetic, known "
+                "internal facts, OS-info intents) plus cost-tier model "
+                "routing with retry/fallback resilience -- see "
+                "`app.agent.Agent`. Runs against a dependency-free "
+                "**mock LLM provider** by default (`LLM_BACKEND=mock`, see "
+                "`app.providers.MockLLMProvider`), so this tab works "
+                "anywhere with zero setup -- ideal for a public demo."
+            )
+            gr.ChatInterface(
+                fn=_chat_rule_based,
+                examples=[
+                    "What is 12 * (7 + 3)?",
+                    "What is the refund policy?",
+                    "What is the current date?",
+                ],
+            )
+        with gr.Tab("ReAct agent (/agent/react) -- qwen3:14b, needs Ollama"):
             gr.Markdown(
                 "Two separate panels fed from the SAME live "
                 "`ReActLangGraphAgent.handle_stream()` call (see "
@@ -376,7 +423,11 @@ def build_app() -> gr.Blocks:
                 "turn (including the REAL tool call behind it, e.g. an exact "
                 "file path) automatically, so a follow-up like 'read that "
                 "file back' works reliably without this UI needing to track "
-                "or resend anything itself."
+                "or resend anything itself.\n\n"
+                "⚠️ **Requires a local Ollama server** (`ollama serve`, with "
+                "`qwen3:14b` pulled) reachable at `OLLAMA_BASE_URL` -- on a "
+                "hosted demo with no Ollama available, use the **Rule-based "
+                "agent** tab above instead."
             )
             with gr.Row():
                 thinking_box = gr.Chatbot(label="🤔 Thinking & tool calls", height=500)
@@ -394,6 +445,7 @@ def build_app() -> gr.Blocks:
                     "How quickly do you respond to support tickets?",
                     "How much memory is this machine using right now?",
                     "Count the files in the current directory.",
+
                     "how many .py files are in the project dir?",
                 ],
                 inputs=msg_box,

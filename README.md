@@ -21,6 +21,47 @@ Engineer job posting:
 | Data disciplines (MLOps-adjacent) | Structured telemetry per request: model, tier, latency, cost, retries |
 | Reasoning-model chain-of-thought | `app/reasoning.py` (DeepSeek-R1 via Ollama, `/chat/reasoning`) |
 
+## Quickstart on a machine with NO Ollama / no prerequisites
+
+The default config (`LLM_BACKEND=mock`, see `.env.example`) means most of
+this project runs with **nothing installed except Python** -- no Ollama, no
+Docker, no API key, no account sign-up of any kind. A fresh machine only
+needs:
+
+```bash
+git clone <this repo> && cd untitled
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+python app.py                 # Gradio UI → http://localhost:7860
+# -- or --
+uvicorn app.main:app --reload  # REST API  → http://localhost:8000
+```
+
+That's it -- no `.env` file, no extra setup. `python app.py` opens the Gradio
+UI's **"Rule-based agent"** tab, which works immediately (it's the first tab,
+intentionally); on the API side, `/chat`, `/chat/lcel`, `/chat/lcel/stream`
+work the same way. Even easier, with only Docker required (not even Python):
+
+```bash
+docker build -t genai-agent-demo .
+docker run -p 7860:7860 genai-agent-demo
+```
+
+**What needs Ollama installed, and what doesn't:**
+
+| Works anywhere, zero setup (mock LLM provider) | Needs a local Ollama server (`ollama serve` + a pulled model) |
+|---|---|
+| Gradio "Rule-based agent" tab | Gradio "ReAct agent" tab (shows a friendly error if Ollama's unreachable, instead of crashing) |
+| `POST /chat` | `POST /agent/react`, `/agent/react/langgraph` |
+| `POST /chat/lcel`, `/chat/lcel/stream` | `POST /chat/lcel/tools*` (any `/tools` path) |
+| | `POST /chat/reasoning*`, `/agent/react/reasoning*` |
+
+Ollama is only ever needed for tool-calling/reasoning demos that need a real
+LLM making real decisions -- everything in the left column is deliberately
+designed to need nothing beyond Python + `pip install`. See "Using a real LLM
+instead of the mock" below to get real (non-mock) answers on the left column
+too, via `OPENAI_API_KEY` -- still no local model/Ollama install required.
+
 ## Architecture
 
 ```
@@ -204,6 +245,49 @@ often need exactly this kind of retry — a straight-line pipeline has
 nowhere for a parse failure to go but raise or degrade; LangGraph's graph
 supports the cycle natively. Also available as a "Reasoning + tools,
 LangGraph" tab in the Gradio UI.
+
+## Deploying to Hugging Face Spaces
+
+The Gradio UI (`app/gradio_app.py`) can be hosted for free as a public
+[Hugging Face Space](https://huggingface.co/spaces) so anyone can try it
+without cloning the repo or running anything locally.
+
+**Important:** a Space has no local Ollama server, so only the
+**Rule-based agent** tab (`app.agent.Agent`, backed by
+`app.providers.MockLLMProvider` — fully offline, no API key, no network
+calls) is guaranteed to work out of the box. The **ReAct agent** tab needs a
+real Ollama server reachable at `OLLAMA_BASE_URL`; without one it now shows a
+clear in-UI message explaining that (see `_react_respond`'s error handling in
+`app/gradio_app.py`) instead of crashing the whole tab.
+
+Steps:
+
+1. On [huggingface.co](https://huggingface.co), click **New Space** →
+   choose the **Gradio** SDK → pick a name/visibility.
+2. Add this repo's `origin` as a second git remote and push to it (Spaces
+   are plain git repos):
+   ```bash
+   git remote add space https://huggingface.co/spaces/<your-username>/<space-name>
+   git push space main
+   ```
+3. The Space auto-detects the root-level `app.py` (a thin wrapper around
+   `app.gradio_app.build_app()` — see that file) and installs
+   `requirements.txt` automatically. No `Dockerfile` needed for the SDK path.
+4. **Optional — enable the ReAct agent tab on the Space too:** only possible
+   with a Docker-SDK Space that also runs an Ollama server (heavier to set
+   up and needs a paid GPU/CPU-upgrade tier for a reasonably-sized model —
+   out of scope for the default free CPU tier). Alternatively, set
+   `LLM_BACKEND=openai` and `OPENAI_API_KEY` as a Space **secret** (Settings →
+   Variables and secrets) to point the *rule-based* agent's LLM fallback path
+   at a real OpenAI model instead of the mock provider — this does **not**
+   enable the ReAct/tool-calling tabs (those are hardcoded to Ollama), only
+   improves the rule-based tab's non-tool-matched answers.
+5. To restore the other commented-out tabs (LCEL chains, reasoning model,
+   etc. — see `app/gradio_app.py`'s `build_app()`) before deploying,
+   uncomment the relevant imports/instantiations/tabs; they all work offline
+   via the mock provider the same way the rule-based tab does, EXCEPT the
+   two "Reasoning" tabs and LCEL tool-calling tabs, which (like the ReAct
+   tab) require a real Ollama server.
 
 ## Possible next steps (not implemented, good talking points)
 

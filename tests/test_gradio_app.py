@@ -1,6 +1,8 @@
 from unittest.mock import patch
 
-from app.gradio_app import _clean_history_for_model, _react_respond
+import httpx
+
+from app.gradio_app import _chat_rule_based, _clean_history_for_model, _react_respond
 
 
 def test_clean_history_strips_debug_metadata_footer_from_assistant_turns():
@@ -108,4 +110,39 @@ def test_react_respond_shows_ask_user_question_in_answer_panel_not_blank():
     assert "Which file do you mean?" in final_answer_content
     assert final_answer_content.strip() != ""
 
+
+def test_react_respond_shows_friendly_error_when_ollama_unreachable():
+    # Regression test: this tab needs a real Ollama server -- on a hosted
+    # demo (e.g. a public Hugging Face Space) with none available, the
+    # underlying httpx call raises a connection error. Without a guard, that
+    # exception would propagate out of the generator and Gradio would show a
+    # raw traceback, making the whole tab look crashed. A clear, actionable
+    # message must be shown in both panels instead.
+    def _fake_handle_stream(message, thread_id=None):
+        raise httpx.ConnectError("Connection refused")
+        yield  # pragma: no cover - unreachable, makes this a generator
+
+    with patch("app.gradio_app._react_agent") as mock_agent:
+        mock_agent.handle_stream.side_effect = _fake_handle_stream
+        events = list(_react_respond("hello", [], [], "tab-thread-broken"))
+
+    assert len(events) == 1
+    thinking_content = events[-1][0][-1]["content"]
+    answer_content = events[-1][1][-1]["content"]
+    assert "Couldn't reach the Ollama backend" in thinking_content
+    assert "Couldn't reach the Ollama backend" in answer_content
+    assert "Rule-based agent" in answer_content
+
+
+def test_chat_rule_based_works_fully_offline():
+    # The mock LLM provider (app.providers.MockLLMProvider, the default with
+    # no env vars set) means this tab needs no API key and no local Ollama --
+    # the one guaranteed-to-work tab on a hosted demo. Exercise it end to end
+    # (no mocking) to confirm that's actually true. A pure arithmetic prompt
+    # is routed deterministically to the calculator tool (app.agent.Agent),
+    # never touching any LLM provider at all.
+    reply = _chat_rule_based("12 * (7 + 3)", [])
+
+    assert "120" in reply
+    assert "tool: `calculator`" in reply
 
