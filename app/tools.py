@@ -725,24 +725,32 @@ _shell_tool = ShellTool(process=_TimeoutAwareBashProcess())
 
 @tool
 def run_shell_command(command: str) -> str:
-    """Run any shell command (full bash/zsh syntax: pipes, redirects, chaining,
-    globs, all standard Unix tools like wc/grep/find/awk/sed/xargs) and return
-    its combined stdout+stderr.
+    """THE GENERAL-PURPOSE, UNRESTRICTED command executor: run ANY shell
+    command (full bash/zsh syntax: pipes, redirects, chaining, globs, every
+    standard Unix tool -- wc/grep/find/awk/sed/xargs/ps/lsof/system_profiler/
+    nvidia-smi/uname/sw_vers/pip/brew/etc.) and return its combined
+    stdout+stderr.
 
-    This has NO allowlist and NO restrictions on which programs or shell
-    features can be used -- you have full freedom to run whatever command is
-    needed to answer the question, including multi-step pipelines like
-    "ls -la | wc -l" or "find . -name '*.py' | xargs wc -l". There is a
-    90-second timeout (enough to curl this app's OWN slower endpoints, which
-    call a real local LLM) and output is truncated if extremely long, but
-    otherwise this behaves like a normal shell prompt. Use it for file
-    system, process, OS, and system-info questions, or anything else where
-    running a real command gives a more accurate answer than guessing.
+    This has NO allowlist, NO fixed menu of "supported" commands, and NO
+    restrictions on which programs or shell features can be used -- you have
+    full freedom to run WHATEVER real command is needed to answer the
+    question, including multi-step pipelines like "ls -la | wc -l" or
+    "find . -name '*.py' | xargs wc -l". It is NOT limited to resource/CPU/
+    memory-style commands -- that is just one example use case among
+    unlimited others (GPU/hardware info, network config, installed packages,
+    running processes, environment variables, OS/kernel version, arbitrary
+    scripts, anything). If another, narrower tool (e.g. 'system_resources')
+    doesn't cover what's being asked, do NOT say you lack the ability to
+    check -- call THIS tool with whatever command would actually answer it.
+    There is a 90-second timeout (enough to curl this app's OWN slower
+    endpoints, which call a real local LLM) and output is truncated if
+    extremely long, but otherwise this behaves like a normal shell prompt.
 
     If the command fails (non-zero exit code, timeout, or any other error),
     the returned text says so explicitly (e.g. a "[exit code N]" prefix or an
-    "Error: ..." message) -- read it and adjust the NEXT command accordingly
-    instead of assuming it succeeded.
+    "Error: ..." message) -- read it and try a different, more appropriate
+    command for this OS/situation instead of assuming it succeeded or giving
+    up after one attempt.
 
     THIS RUNS ON THE SERVER'S OWN MACHINE WITH THE SERVER'S OWN PERMISSIONS --
     avoid destructive commands (deleting/overwriting files, killing
@@ -851,23 +859,90 @@ def file_search(pattern: str, dir_path: str = ".") -> str:
     return _raw_file_search.invoke({"dir_path": dir_path, "pattern": pattern})
 
 
+GPU_INFO_TIMEOUT_SECONDS = 10
+
+
+def _detect_gpu_info() -> str:
+    """Best-effort GPU detection, since 'psutil' (used for CPU/memory/disk
+    below) has no GPU support at all. Tries macOS's 'system_profiler' first,
+    then NVIDIA's 'nvidia-smi' (works on any OS if the driver is installed).
+    Returns a short explanatory message (never raises) if neither applies --
+    the model should fall back to 'run_shell_command' with an OS-specific
+    command (e.g. 'lspci | grep -i vga' on Linux) in that case.
+    """
+    import platform
+
+    if platform.system() == "Darwin":
+        try:
+            result = subprocess.run(
+                ["system_profiler", "SPDisplaysDataType"],
+                capture_output=True,
+                text=True,
+                timeout=GPU_INFO_TIMEOUT_SECONDS,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+                keep_prefixes = ("Chipset Model", "Type:", "Total Number of Cores", "Vendor", "Metal")
+                details = [line for line in lines if line.startswith(keep_prefixes)]
+                if details:
+                    return "GPU: " + "; ".join(details)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=name,memory.total,memory.used,utilization.gpu",
+                "--format=csv,noheader",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=GPU_INFO_TIMEOUT_SECONDS,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            gpus = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+            return "GPU(s) (nvidia-smi): " + " | ".join(gpus)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+    return (
+        "GPU: no GPU info available from this tool (checked 'system_profiler' "
+        "on macOS and 'nvidia-smi' for NVIDIA -- neither applied/succeeded "
+        "here). This does NOT mean the machine has no GPU -- call "
+        "'run_shell_command' with another OS-specific command (e.g. "
+        "'lspci | grep -i vga' on Linux) to check further instead of "
+        "concluding there is none."
+    )
+
+
 @tool
 def system_resources() -> str:
-    """Report current CPU usage, memory usage, and disk usage as exact numbers.
+    """Report current CPU usage, memory usage, disk usage, and best-effort
+    GPU info as exact numbers/facts.
 
-    Computed directly via the 'psutil' library (no shelling out to 'df',
-    'top', or 'uptime' and parsing their text). Use this for questions like
-    "how much memory/disk/CPU is being used right now".
+    CPU/memory/disk are computed directly via the 'psutil' library (no
+    shelling out to 'df'/'top'/'uptime' and parsing their text). GPU info
+    ('psutil' has no GPU support) is detected via 'system_profiler' (macOS)
+    or 'nvidia-smi' (NVIDIA, any OS) -- if that still doesn't answer the
+    question (e.g. a non-NVIDIA Linux GPU, driver details, utilization
+    history, or ANY other hardware/OS fact not listed here: network
+    interfaces, disk partitions, installed packages, running processes,
+    kernel/OS version, etc.), use 'run_shell_command' with the appropriate
+    real command instead -- this tool does NOT cover everything about the
+    machine, only CPU/memory/disk/GPU as reported above.
     """
     cpu_percent = psutil.cpu_percent(interval=0.2)
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
+    gpu_info = _detect_gpu_info()
     return (
         f"CPU usage: {cpu_percent:.1f}%\n"
         f"Memory: {mem.percent:.1f}% used "
         f"({mem.used // (1024 ** 2)} MB used / {mem.total // (1024 ** 2)} MB total)\n"
         f"Disk ('/'): {disk.percent:.1f}% used "
-        f"({disk.used // (1024 ** 3)} GB used / {disk.total // (1024 ** 3)} GB total)"
+        f"({disk.used // (1024 ** 3)} GB used / {disk.total // (1024 ** 3)} GB total)\n"
+        f"{gpu_info}"
     )
 
 
